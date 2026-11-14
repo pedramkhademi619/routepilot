@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1A365D" />
+      <stop offset="50%" stop-color="#2B6CB0" />
+      <stop offset="100%" stop-color="#0F172A" />
+    </linearGradient>
+    <linearGradient id="routeCyan" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38B2AC" />
+      <stop offset="100%" stop-color="#63B3ED" />
+    </linearGradient>
+    <linearGradient id="routePurple" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#4299E1" />
+      <stop offset="100%" stop-color="#90CDF4" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.4" />
+    </filter>
+  </defs>
+
+  <!-- Outer rounded squircle background with shadow -->
+  <rect x="16" y="16" width="224" height="224" rx="56" fill="url(#bgGrad)" filter="url(#shadow)" stroke="#4299E1" stroke-width="2" stroke-opacity="0.5" />
+
+  <!-- Outer network routing ring -->
+  <circle cx="128" cy="128" r="82" fill="none" stroke="#2B6CB0" stroke-width="3" stroke-dasharray="8 6" opacity="0.6" />
+
+  <!-- Split bypass arcs -->
+  <!-- Direct bypass arc (Cyan) -->
+  <path d="M 64,128 C 64,78 128,68 184,80" fill="none" stroke="url(#routeCyan)" stroke-width="6" stroke-linecap="round" />
+  <circle cx="184" cy="80" r="6" fill="#63B3ED" />
+
+  <!-- VPN tunnel arc (Dotted blue) -->
+  <path d="M 64,128 C 64,178 128,188 184,176" fill="none" stroke="url(#routePurple)" stroke-width="5" stroke-dasharray="6 4" stroke-linecap="round" />
+  <circle cx="184" cy="176" r="5" fill="#90CDF4" />
+
+  <!-- Center origin node -->
+  <circle cx="64" cy="128" r="8" fill="#38B2AC" />
+  <circle cx="64" cy="128" r="4" fill="#FFFFFF" />
+
+  <!-- Center Pilot Chevron / Compass Arrow -->
+  <g transform="translate(128, 128)">
+    <polygon points="0,-42 32,34 0,18 -32,34" fill="#FFFFFF" filter="url(#shadow)" />
+    <!-- Inner cyan accent split -->
+    <polygon points="0,-36 24,28 0,14" fill="#63B3ED" />
+    <polygon points="0,-36 0,14 -24,28" fill="#E2E8F0" />
+  </g>
+</svg>
