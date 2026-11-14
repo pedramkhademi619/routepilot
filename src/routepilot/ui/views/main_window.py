@@ -1,6 +1,7 @@
 """Main application window for RoutePilot."""
 
 import asyncio
+import subprocess
 
 from PyQt6.QtWidgets import (
     QButtonGroup,
@@ -159,6 +160,7 @@ class MainWindow(QMainWindow):
             if saved:
                 self.rules_vm.save_or_update_rule(saved)
                 self.overview_vm.refresh()
+                subprocess.Popen(["/home/pedram/.local/bin/routepilot-apply"])
 
     def _trigger_refresh(self) -> None:
         try:

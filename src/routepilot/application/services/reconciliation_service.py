@@ -6,6 +6,7 @@ import os
 
 from routepilot.application.services.routepilot_plan import RoutePilotPlan
 from routepilot.domain.exceptions.rollback_error import RollbackError
+from routepilot.domain.ports.dns_resolver_port import DnsResolverPort
 from routepilot.domain.ports.firewall_port import FirewallPort
 from routepilot.domain.ports.policy_routing_port import PolicyRoutingPort
 
@@ -21,10 +22,12 @@ class ReconciliationService:
         self,
         routing_port: PolicyRoutingPort,
         firewall_port: FirewallPort,
+        dns_port: DnsResolverPort | None = None,
         journal_path: str | None = None,
     ) -> None:
         self.routing_port = routing_port
         self.firewall_port = firewall_port
+        self.dns_port = dns_port
         self.journal_path = journal_path or self._resolve_journal_path()
         self._active_plan: RoutePilotPlan | None = None
 
@@ -50,6 +53,11 @@ class ReconciliationService:
                     fwmask=rule.get("fwmask", 0x00FF0000),
                     family=rule.get("family", 4),
                 )
+
+            # 4. Configure Split DNS on interfaces
+            if self.dns_port:
+                for iface, domains in plan.split_dns_links.items():
+                    self.dns_port.configure_split_dns(iface, domains)
 
             self._active_plan = plan
             self._write_journal(plan, status="committed")
@@ -85,6 +93,14 @@ class ReconciliationService:
             self.firewall_port.flush_routepilot_table()
         except Exception as e:
             errors.append(f"Failed to flush nftables routepilot table: {e}")
+
+        # 4. Reset split DNS
+        if self.dns_port and plan.split_dns_links:
+            for iface in plan.split_dns_links.keys():
+                try:
+                    self.dns_port.reset_split_dns(iface)
+                except Exception as e:
+                    errors.append(f"Failed to reset split DNS on {iface}: {e}")
 
         self._active_plan = None
         self._clear_journal()

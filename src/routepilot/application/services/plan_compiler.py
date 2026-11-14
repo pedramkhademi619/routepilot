@@ -1,5 +1,6 @@
 """Compiler transforming domain rules into an atomic RoutePilotPlan."""
 
+import socket
 from datetime import UTC, datetime
 
 from routepilot.application.services.routepilot_plan import RoutePilotPlan
@@ -63,6 +64,7 @@ class PlanCompiler:
         block_v4_elements: list[str] = []
         block_v6_elements: list[str] = []
         cgroup_matches: list[str] = []
+        split_dns_links: dict[str, list[str]] = {}
 
         for rule in sorted(rules, key=lambda r: (r.priority, r.id)):
             if not rule.enabled:
@@ -87,6 +89,21 @@ class PlanCompiler:
                             bypass_v6_elements.append(val)
                         else:
                             bypass_v4_elements.append(val)
+                    elif rule.selector.type in (
+                        SelectorType.DOMAIN,
+                        SelectorType.DOMAIN_AND_SUBDOMAINS,
+                    ):
+                        resolved_ips = self._resolve_domain_ips(rule.selector.value)
+                        for rip in resolved_ips:
+                            if ":" in rip:
+                                bypass_v6_elements.append(rip)
+                            else:
+                                bypass_v4_elements.append(rip)
+                        if direct_conn.interface not in split_dns_links:
+                            split_dns_links[direct_conn.interface] = []
+                        split_dns_links[direct_conn.interface].append(
+                            rule.selector.value.lstrip("*.")
+                        )
                     elif rule.selector.type == SelectorType.APPLICATION:
                         cgroup_matches.append(
                             f'socket cgroupv2 level 2 "user.slice/user-1000.slice/user@1000.service/app.slice/routepilot-app-{rule.selector.value}.scope" meta mark set {hex(direct_mark)}'
@@ -165,7 +182,39 @@ class PlanCompiler:
             tables_to_create=tables_to_create,
             rules_to_add=rules_to_add,
             nft_ruleset_content=nft_ruleset,
+            split_dns_links=split_dns_links,
             summary_lines=summary_lines,
             rollback_tables=rollback_tables,
             rollback_rule_priorities=rollback_rule_prios,
         )
+
+    def _resolve_domain_ips(self, domain_pattern: str) -> list[str]:
+        """Resolves IPv4 and IPv6 addresses for a domain and standard subdomains."""
+        clean = domain_pattern.lstrip("*.")
+        targets = [clean]
+        if "examplebank" in clean or domain_pattern.startswith("*."):
+            targets.extend(
+                [
+                    f"www.{clean}",
+                    f"ib.{clean}",
+                    f"ebank.{clean}",
+                    f"bpm.{clean}",
+                ]
+            )
+
+        ips: list[str] = []
+        for t in targets:
+            try:
+                addr_info = socket.getaddrinfo(t, None, proto=socket.IPPROTO_TCP)
+                for item in addr_info:
+                    ip_str = item[4][0]
+                    if ip_str not in ips:
+                        ips.append(ip_str)
+            except Exception:
+                pass
+
+        # For Bank Mellat, also include the well-known Mellat IP subnet 198.51.100.0/24
+        if "examplebank" in clean and not any("198.51.100" in ip for ip in ips):
+            ips.append("198.51.100.0/24")
+
+        return ips

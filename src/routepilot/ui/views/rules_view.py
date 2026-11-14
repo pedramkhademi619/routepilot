@@ -1,5 +1,6 @@
 """Rules View for searching, inspecting, and managing traffic policy rules."""
 
+import subprocess
 from collections.abc import Callable
 
 from PyQt6.QtCore import Qt
@@ -52,6 +53,12 @@ class RulesView(QWidget):
         header_row.addLayout(title_box)
 
         header_row.addStretch()
+
+        apply_btn = QPushButton("⚡ Apply to Kernel")
+        apply_btn.setObjectName("primaryButton")
+        apply_btn.setStyleSheet("background-color: #276749; color: #FFFFFF; font-weight: 600;")
+        apply_btn.clicked.connect(self._on_apply_clicked)
+        header_row.addWidget(apply_btn)
 
         add_btn = QPushButton("+ Create Rule")
         add_btn.setObjectName("primaryButton")
@@ -136,3 +143,7 @@ class RulesView(QWidget):
             btn_layout.addWidget(del_btn)
 
             self.table.setCellWidget(row, 6, btn_widget)
+
+    def _on_apply_clicked(self) -> None:
+        """Invokes the routepilot-apply privileged helper via pkexec."""
+        subprocess.Popen(["/home/pedram/.local/bin/routepilot-apply"])
