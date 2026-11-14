@@ -1,6 +1,7 @@
 """Privileged and unprivileged RoutePilot Apply CLI."""
 
 import asyncio
+import json
 import os
 import shutil
 import socket
@@ -81,42 +82,78 @@ class RoutePilotApplyCli:
         except Exception as e:
             print(f"Reconciliation error (continuing with host routes): {e}", file=sys.stderr)
 
-        # For domain rules, add direct host routes and split DNS
+        STATE_FILE = "/tmp/routepilot_active_bypass_ips.json"
+        prev_installed: set[str] = set()
+        if os.path.exists(STATE_FILE):
+            try:
+                with open(STATE_FILE, encoding="utf-8") as f:
+                    prev_installed = set(json.load(f))
+            except Exception:
+                prev_installed = set()
+
+        active_ips: set[str] = set()
+        active_domains: set[str] = set()
+        to_clean_ips: set[str] = set()
+
         for rule in doc.rules:
-            if not rule.enabled:
-                continue
+            domains = []
+            if rule.selector.type in (SelectorType.DOMAIN, SelectorType.DOMAIN_AND_SUBDOMAINS):
+                domains.append(rule.selector.value.lstrip("*."))
+            elif rule.selector.type in (SelectorType.IP_ADDRESS, SelectorType.CIDR):
+                if rule.enabled and rule.action.type == ActionType.USE_DIRECT:
+                    active_ips.add(rule.selector.value)
+                else:
+                    to_clean_ips.add(rule.selector.value)
 
-            if rule.action.type == ActionType.USE_DIRECT:
-                domains_to_resolve = []
-                if rule.selector.type in (SelectorType.DOMAIN, SelectorType.DOMAIN_AND_SUBDOMAINS):
-                    domains_to_resolve.append(rule.selector.value.lstrip("*."))
+            for d in domains:
+                resolved = self._resolve_target(d)
+                if rule.enabled and rule.action.type == ActionType.USE_DIRECT:
+                    active_domains.add(d)
+                    active_ips.update(resolved)
+                else:
+                    to_clean_ips.update(resolved)
 
-                for d in domains_to_resolve:
-                    resolved = self._resolve_target(d)
-                    print(f"Resolved {d} -> {resolved}")
-                    for ip_addr in resolved:
-                        try:
-                            # Add host route directly in main table so it wins over default route
-                            route = RouteEntry(
-                                destination=f"{ip_addr}/32" if "/" not in ip_addr else ip_addr,
-                                gateway=gw,
-                                interface=direct_conn.interface,
-                                metric=10,
-                                table_id=254,
-                            )
-                            self.routing_adapter.add_routing_table_route(254, route)
-                            print(
-                                f"  + Added bypass host route: {route.destination} via {direct_conn.interface}"
-                            )
-                        except Exception as e:
-                            print(f"  - Failed to add route for {ip_addr}: {e}")
+        # 1. Remove stale / disabled bypass routes from table 254
+        stale_ips = (prev_installed - active_ips) | (to_clean_ips - active_ips)
+        for stale_ip in stale_ips:
+            try:
+                dst = f"{stale_ip}/32" if "/" not in stale_ip else stale_ip
+                self.routing_adapter.remove_routing_table_route(254, dst)
+                print(f"  - Removed disabled/stale bypass route: {dst} from table 254")
+            except Exception as e:
+                print(f"  - Note: could not remove route {stale_ip}: {e}")
 
-                    # Configure split DNS in systemd-resolved
-                    try:
-                        self.dns_adapter.configure_split_dns(direct_conn.interface, [d])
-                        print(f"  + Configured split DNS for ~{d} on {direct_conn.interface}")
-                    except Exception as e:
-                        print(f"  - Split DNS error: {e}")
+        # 2. Add or update active bypass host routes in table 254
+        for ip_addr in active_ips:
+            try:
+                dst = f"{ip_addr}/32" if "/" not in ip_addr else ip_addr
+                route = RouteEntry(
+                    destination=dst,
+                    gateway=gw,
+                    interface=direct_conn.interface,
+                    metric=10,
+                    table_id=254,
+                )
+                self.routing_adapter.add_routing_table_route(254, route)
+                print(
+                    f"  + Added bypass host route: {route.destination} via {direct_conn.interface}"
+                )
+            except Exception as e:
+                print(f"  - Failed to add route for {ip_addr}: {e}")
+
+        # 3. Configure split DNS in systemd-resolved for active domains
+        try:
+            self.dns_adapter.configure_split_dns(direct_conn.interface, list(active_domains))
+            print(f"  + Configured split DNS for {len(active_domains)} active domains on {direct_conn.interface}")
+        except Exception as e:
+            print(f"  - Split DNS error: {e}")
+
+        # 4. Save state of active bypass IPs
+        try:
+            with open(STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(list(active_ips), f)
+        except Exception:
+            pass
 
         print("\n✅ RoutePilot policy successfully applied to the Linux kernel!")
         return 0

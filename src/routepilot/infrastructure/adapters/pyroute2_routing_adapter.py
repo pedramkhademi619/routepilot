@@ -47,8 +47,30 @@ class Pyroute2RoutingAdapter(PolicyRoutingPort):
         ip = IPRoute()
         try:
             dst = destination if destination != "0.0.0.0/0" else "default"
-            ip.route("del", dst=dst, table=table_id, family=family)
-            logger.info("Route removed: table %d dst %s", table_id, destination)
+            if dst.endswith("/32"):
+                dst = dst[:-3]
+            elif dst.endswith("/128"):
+                dst = dst[:-4]
+
+            routes = ip.get_routes(family=2 if family == 4 else 10, table=table_id)
+            deleted = False
+            for r in routes:
+                attrs = dict(r.get("attrs", []))
+                rta_dst = attrs.get("RTA_DST")
+                if rta_dst == dst or (dst == "default" and "RTA_DST" not in attrs):
+                    try:
+                        ip.route("del", **r)
+                        deleted = True
+                        logger.info("Route removed: table %d dst %s", table_id, destination)
+                    except Exception as err:
+                        logger.debug("Failed deleting specific route: %s", err)
+
+            if not deleted:
+                try:
+                    ip.route("del", dst=dst, table=table_id, family=family)
+                    logger.info("Route removed (fallback): table %d dst %s", table_id, destination)
+                except Exception as err:
+                    logger.debug("Fallback route del error: %s", err)
         except Exception as e:
             logger.debug("Route del non-fatal error: %s", e)
         finally:

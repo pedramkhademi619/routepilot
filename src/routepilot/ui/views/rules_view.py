@@ -160,9 +160,9 @@ class RulesView(QWidget):
             badge_layout.setContentsMargins(6, 4, 6, 4)
             badge_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
             state_text = (
-                ("فعال" if rule.enabled else "غیرفعال")
+                ("🟢 فعال" if rule.enabled else "⚪ غیرفعال")
                 if is_fa
-                else ("Active" if rule.enabled else "Disabled")
+                else ("🟢 Active" if rule.enabled else "⚪ Disabled")
             )
             badge = QLabel(state_text)
             badge.setObjectName("badgeDirect" if rule.enabled else "badgeOffline")
@@ -206,16 +206,21 @@ class RulesView(QWidget):
             btn_layout.setSpacing(6)
             btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-            toggle_label = (
-                ("غیرفعال‌سازی" if rule.enabled else "فعال‌سازی")
-                if is_fa
-                else (t("common.disable") if rule.enabled else t("common.enable"))
-            )
+            if rule.enabled:
+                toggle_label = "⏸ غیرفعال‌سازی" if is_fa else "⏸ Disable"
+                toggle_tip = "کلیک کنید تا این قانون غیرفعال شود" if is_fa else "Click to disable this rule"
+                toggle_btn_obj = "secondaryButton"
+            else:
+                toggle_label = "▶ فعال‌سازی" if is_fa else "▶ Enable"
+                toggle_tip = "کلیک کنید تا این قانون فعال شود" if is_fa else "Click to enable this rule"
+                toggle_btn_obj = "primaryButton"
+
             toggle_btn = QPushButton(toggle_label)
-            toggle_btn.setObjectName("secondaryButton")
-            toggle_btn.setFixedWidth(78 if is_fa else 70)
+            toggle_btn.setToolTip(toggle_tip)
+            toggle_btn.setObjectName(toggle_btn_obj)
+            toggle_btn.setFixedWidth(82 if is_fa else 74)
             toggle_btn.setFixedHeight(28)
-            toggle_btn.clicked.connect(lambda _, r_id=rule.id: self.viewmodel.toggle_rule(r_id))
+            toggle_btn.clicked.connect(lambda _, r_id=rule.id: self._on_toggle_rule(r_id))
             btn_layout.addWidget(toggle_btn)
 
             edit_btn = QPushButton(t("common.edit"))
@@ -229,10 +234,20 @@ class RulesView(QWidget):
             del_btn.setObjectName("dangerButton")
             del_btn.setFixedWidth(56)
             del_btn.setFixedHeight(28)
-            del_btn.clicked.connect(lambda _, r_id=rule.id: self.viewmodel.delete_rule(r_id))
+            del_btn.clicked.connect(lambda _, r_id=rule.id: self._on_delete_rule(r_id))
             btn_layout.addWidget(del_btn)
 
             self.table.setCellWidget(row, 6, btn_widget)
+
+    def _on_toggle_rule(self, rule_id: str) -> None:
+        """Toggles rule and immediately updates kernel routing state."""
+        self.viewmodel.toggle_rule(rule_id)
+        self._on_apply_clicked()
+
+    def _on_delete_rule(self, rule_id: str) -> None:
+        """Deletes rule and immediately updates kernel routing state."""
+        self.viewmodel.delete_rule(rule_id)
+        self._on_apply_clicked()
 
     def _format_action(self, action_type: ActionType, is_fa: bool) -> str:
         if is_fa:
