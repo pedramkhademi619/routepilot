@@ -95,3 +95,39 @@ def test_diagnostics_view_evaluation(mock_app: MainWindow) -> None:
     res = mock_app.diagnostics_vm.evaluate_target("198.51.100.10")
     assert res.action == ActionType.USE_DIRECT
     assert "Banking Bypass" in res.explanation
+
+
+def test_rules_table_responsiveness(mock_app: MainWindow) -> None:
+    """Verifies that the rules table has responsive column stretch and fixed controls."""
+    header = mock_app.rules_view.table.horizontalHeader()
+    from PyQt6.QtWidgets import QHeaderView
+
+    # Verify stretchLastSection is disabled so controls don't stretch indefinitely
+    assert not header.stretchLastSection()
+    # Verify Target Selector (col 3) stretches across all available space
+    assert header.sectionResizeMode(3) == QHeaderView.ResizeMode.Stretch
+    # Verify Controls (col 6) has fixed width
+    assert header.sectionResizeMode(6) == QHeaderView.ResizeMode.Fixed
+    assert mock_app.rules_view.table.columnWidth(6) == 220
+
+
+def test_persian_language_switching(mock_app: MainWindow) -> None:
+    """Verifies that switching to Persian translates navigation tabs and settings."""
+    from routepilot.ui.translation_manager import TranslationManager
+
+    i18n = TranslationManager.instance()
+
+    # Switch to Persian
+    mock_app.settings_vm.set_language("fa")
+    assert i18n.current_language == "fa"
+    assert mock_app.nav_buttons[0].text() == "نمای کلی"
+    assert mock_app.nav_buttons[1].text() == "قوانین ترافیک"
+    assert mock_app.nav_buttons[4].text() == "تنظیمات"
+
+    # Switch back to English
+    mock_app.settings_vm.set_language("en")
+    assert i18n.current_language == "en"
+    assert mock_app.nav_buttons[0].text() == "Overview"
+    assert mock_app.nav_buttons[1].text() == "Traffic Rules"
+    assert mock_app.nav_buttons[4].text() == "Settings"
+

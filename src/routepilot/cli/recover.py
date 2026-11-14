@@ -13,16 +13,15 @@ class EmergencyRecoveryCli:
     def __init__(self) -> None:
         self.routing_adapter = Pyroute2RoutingAdapter()
         self.firewall_adapter = NftablesFirewallAdapter()
-        self.reconciliation = ReconciliationService(
-            self.routing_adapter,
-            self.firewall_adapter
-        )
+        self.reconciliation = ReconciliationService(self.routing_adapter, self.firewall_adapter)
 
     def run(self) -> int:
         print("RoutePilot: Initiating emergency state purge...")
         try:
             self.reconciliation.emergency_reset()
-            print("Successfully purged table inet routepilot and custom policy tables (10001..10099).")
+            print(
+                "Successfully purged table inet routepilot and custom policy tables (10001..10099)."
+            )
             return 0
         except Exception as e:
             print(f"Error during recovery: {e}", file=sys.stderr)

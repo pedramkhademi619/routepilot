@@ -102,6 +102,7 @@ module = [
 ]
 ignore_missing_imports = true
 ignore_errors = true
+follow_imports = "skip"
 
 [tool.pytest.ini_options]
 minversion = "7.0"

@@ -3,6 +3,7 @@
 import asyncio
 import sys
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication
 
 from routepilot.application.services.discovery_service import DiscoveryService
@@ -16,6 +17,7 @@ from routepilot.infrastructure.adapters.nftables_firewall_adapter import Nftable
 from routepilot.infrastructure.adapters.nm_discovery_adapter import NetworkManagerDiscoveryAdapter
 from routepilot.infrastructure.adapters.pyroute2_routing_adapter import Pyroute2RoutingAdapter
 from routepilot.ui.style import ThemeManager
+from routepilot.ui.translation_manager import TranslationManager
 from routepilot.ui.views.main_window import MainWindow
 
 
@@ -41,8 +43,14 @@ class RoutePilotApp:
             self.routing_adapter, self.firewall_adapter
         )
 
-        # Style & Main Window
+        # Style & Localization
         ThemeManager.apply_theme(self.app, "dark")
+        i18n = TranslationManager.instance()
+        if i18n.current_language == "fa":
+            self.app.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        else:
+            self.app.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+
         self.main_window = MainWindow(
             discovery_service=self.discovery_service,
             policy_repo=self.policy_repo,

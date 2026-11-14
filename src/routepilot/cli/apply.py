@@ -63,8 +63,9 @@ class RoutePilotApplyCli:
             print("Warning: No active direct physical network connection (Wi-Fi/Ethernet) found.")
             return 1
 
+        gw = direct_conn.ip4_config.gateway if direct_conn.ip4_config else None
         print(
-            f"Direct Egress Interface: {direct_conn.interface} ({direct_conn.id}) gw: {direct_conn.ip4_config.gateway}"
+            f"Direct Egress Interface: {direct_conn.interface} ({direct_conn.id}) gw: {gw}"
         )
 
         compiler = PlanCompiler()
@@ -98,7 +99,7 @@ class RoutePilotApplyCli:
                             # Add host route directly in main table so it wins over default route
                             route = RouteEntry(
                                 destination=f"{ip_addr}/32" if "/" not in ip_addr else ip_addr,
-                                gateway=direct_conn.ip4_config.gateway,
+                                gateway=gw,
                                 interface=direct_conn.interface,
                                 metric=10,
                                 table_id=254,
@@ -139,7 +140,7 @@ class RoutePilotApplyCli:
             try:
                 addr_info = socket.getaddrinfo(t, None, proto=socket.IPPROTO_TCP)
                 for item in addr_info:
-                    ip_str = item[4][0]
+                    ip_str = str(item[4][0])
                     if ip_str not in ips:
                         ips.append(ip_str)
             except Exception:

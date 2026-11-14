@@ -7,7 +7,9 @@ import sys
 from routepilot.application.services.discovery_service import DiscoveryService
 from routepilot.application.services.policy_evaluator import PolicyEvaluator
 from routepilot.application.services.reconciliation_service import ReconciliationService
-from routepilot.infrastructure.adapters.json_policy_repository_adapter import JsonPolicyRepositoryAdapter
+from routepilot.infrastructure.adapters.json_policy_repository_adapter import (
+    JsonPolicyRepositoryAdapter,
+)
 from routepilot.infrastructure.adapters.mock_discovery_adapter import MockDiscoveryAdapter
 from routepilot.infrastructure.adapters.nftables_firewall_adapter import NftablesFirewallAdapter
 from routepilot.infrastructure.adapters.nm_discovery_adapter import NetworkManagerDiscoveryAdapter
@@ -26,9 +28,11 @@ class RoutePilotCli:
     def run(self, argv: list[str]) -> int:
         parser = argparse.ArgumentParser(
             prog="routepilot",
-            description="RoutePilot: Selective VPN bypass and traffic policy routing utility"
+            description="RoutePilot: Selective VPN bypass and traffic policy routing utility",
         )
-        parser.add_argument("--mock", action="store_true", help="Use mock network adapters for offline testing")
+        parser.add_argument(
+            "--mock", action="store_true", help="Use mock network adapters for offline testing"
+        )
         subparsers = parser.add_subparsers(dest="command", required=True)
 
         # status command
@@ -38,7 +42,9 @@ class RoutePilotCli:
         subparsers.add_parser("rules", help="List configured traffic routing rules")
 
         # eval command
-        eval_parser = subparsers.add_parser("eval", help="Evaluate routing decision for a destination")
+        eval_parser = subparsers.add_parser(
+            "eval", help="Evaluate routing decision for a destination"
+        )
         eval_parser.add_argument("target", help="Destination IP or domain name")
 
         # reset command
@@ -46,7 +52,9 @@ class RoutePilotCli:
 
         args = parser.parse_args(argv)
 
-        discovery_adapter = MockDiscoveryAdapter() if args.mock else NetworkManagerDiscoveryAdapter()
+        discovery_adapter = (
+            MockDiscoveryAdapter() if args.mock else NetworkManagerDiscoveryAdapter()
+        )
         discovery_service = DiscoveryService(discovery_adapter)
 
         if args.command == "status":
@@ -67,9 +75,13 @@ class RoutePilotCli:
         for c in conns:
             vpn_tag = "[VPN]" if c.is_vpn else "[DIRECT]" if c.is_eligible_direct else "[OTHER]"
             default_tag = " (Default Gateway)" if c.is_default else ""
-            print(f" {vpn_tag:<8} {c.id:<25} iface: {c.interface:<8} metric: {c.metric}{default_tag}")
+            print(
+                f" {vpn_tag:<8} {c.id:<25} iface: {c.interface:<8} metric: {c.metric}{default_tag}"
+            )
             if c.ip4_config and c.ip4_config.addresses:
-                print(f"          IPs: {', '.join(c.ip4_config.addresses)} | Gateway: {c.ip4_config.gateway}")
+                print(
+                    f"          IPs: {', '.join(c.ip4_config.addresses)} | Gateway: {c.ip4_config.gateway}"
+                )
         print("=" * 60)
         return 0
 
@@ -80,7 +92,9 @@ class RoutePilotCli:
         print("=" * 70)
         for r in rules:
             status = "ON " if r.enabled else "OFF"
-            print(f" [{status}] Prio {r.priority:<4} | {r.name:<25} | {r.selector.type.value}:{r.selector.value}")
+            print(
+                f" [{status}] Prio {r.priority:<4} | {r.name:<25} | {r.selector.type.value}:{r.selector.value}"
+            )
             print(f"       -> Action: {r.action.type.value} | Condition: {r.condition.type.value}")
         print("=" * 70)
         return 0
@@ -96,7 +110,9 @@ class RoutePilotCli:
         print(f" Effective Action : {res.action.value.upper()}")
         print(f" Blocked (Dropped): {res.is_blocked}")
         if res.target_connection:
-            print(f" Egress Interface : {res.target_connection.interface} ({res.target_connection.id})")
+            print(
+                f" Egress Interface : {res.target_connection.interface} ({res.target_connection.id})"
+            )
         print(f" Explanation      : {res.explanation}")
         if res.conflicts:
             print(f" Warnings         : {'; '.join(res.conflicts)}")

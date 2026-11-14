@@ -2,6 +2,7 @@
 
 import asyncio
 import subprocess
+from collections.abc import Callable
 
 from PyQt6.QtWidgets import (
     QButtonGroup,
@@ -19,6 +20,7 @@ from routepilot.application.services.discovery_service import DiscoveryService
 from routepilot.application.services.reconciliation_service import ReconciliationService
 from routepilot.domain.policy.routing_rule import RoutingRule
 from routepilot.domain.ports.policy_repository_port import PolicyRepositoryPort
+from routepilot.ui.translation_manager import TranslationManager
 from routepilot.ui.viewmodels.connections_viewmodel import ConnectionsViewModel
 from routepilot.ui.viewmodels.diagnostics_viewmodel import DiagnosticsViewModel
 from routepilot.ui.viewmodels.overview_viewmodel import OverviewViewModel
@@ -41,16 +43,17 @@ class MainWindow(QMainWindow):
         discovery_service: DiscoveryService,
         policy_repo: PolicyRepositoryPort,
         reconciliation_service: ReconciliationService,
-        on_theme_changed: callable,
+        on_theme_changed: Callable[[str], None],
     ) -> None:
         super().__init__()
         self.discovery_service = discovery_service
         self.policy_repo = policy_repo
         self.reconciliation_service = reconciliation_service
         self.on_theme_changed = on_theme_changed
+        self.i18n = TranslationManager.instance()
 
-        self.setWindowTitle("RoutePilot — Traffic Policy Routing")
-        self.resize(980, 680)
+        self.setWindowTitle(self.i18n.t("app.title"))
+        self.resize(1020, 680)
         self.setMinimumSize(850, 550)
 
         # Initialize ViewModels
@@ -61,8 +64,12 @@ class MainWindow(QMainWindow):
         self.settings_vm = SettingsViewModel(self.policy_repo, self.reconciliation_service)
         self.settings_vm.theme_changed.connect(self.on_theme_changed)
 
+        self.nav_buttons: dict[int, QPushButton] = {}
         self._setup_ui()
         self._init_tray()
+
+        self.i18n.language_changed.connect(lambda _: self.retranslate_ui())
+        self.retranslate_ui()
 
     def _setup_ui(self) -> None:
         central_widget = QWidget()
@@ -93,20 +100,21 @@ class MainWindow(QMainWindow):
         self.nav_group.setExclusive(True)
 
         nav_items = [
-            ("Overview", 0),
-            ("Traffic Rules", 1),
-            ("Connections", 2),
-            ("Diagnostics", 3),
-            ("Settings", 4),
+            ("nav.overview", 0),
+            ("nav.rules", 1),
+            ("nav.connections", 2),
+            ("nav.diagnostics", 3),
+            ("nav.settings", 4),
         ]
 
-        for text, index in nav_items:
-            btn = QPushButton(text)
+        for key, index in nav_items:
+            btn = QPushButton(self.i18n.t(key))
             btn.setObjectName("navButton")
             btn.setCheckable(True)
             if index == 0:
                 btn.setChecked(True)
             self.nav_group.addButton(btn, index)
+            self.nav_buttons[index] = btn
             nav_layout.addWidget(btn)
 
         self.nav_group.idClicked.connect(self._on_nav_clicked)
@@ -136,12 +144,47 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.stack)
         self.setCentralWidget(central_widget)
 
+    def retranslate_ui(self) -> None:
+        """Dynamically retranslates window title, navigation bar, and child views."""
+        t = self.i18n.t
+        self.setWindowTitle(t("app.title"))
+
+        if 0 in self.nav_buttons:
+            self.nav_buttons[0].setText(t("nav.overview"))
+        if 1 in self.nav_buttons:
+            self.nav_buttons[1].setText(t("nav.rules"))
+        if 2 in self.nav_buttons:
+            self.nav_buttons[2].setText(t("nav.connections"))
+        if 3 in self.nav_buttons:
+            self.nav_buttons[3].setText(t("nav.diagnostics"))
+        if 4 in self.nav_buttons:
+            self.nav_buttons[4].setText(t("nav.settings"))
+
+        # Notify child views
+        if hasattr(self.overview_view, "retranslate_ui"):
+            self.overview_view.retranslate_ui()
+        if hasattr(self.rules_view, "retranslate_ui"):
+            self.rules_view.retranslate_ui()
+        if hasattr(self.connections_view, "retranslate_ui"):
+            self.connections_view.retranslate_ui()
+        if hasattr(self.diagnostics_view, "retranslate_ui"):
+            self.diagnostics_view.retranslate_ui()
+        if hasattr(self.settings_view, "retranslate_ui"):
+            self.settings_view.retranslate_ui()
+
     def _init_tray(self) -> None:
         self.tray_manager = TrayIconManager(
             on_toggle_window=self._toggle_visibility,
-            on_open_rules=lambda: (self.show(), self.switch_to_tab(1)),
-            on_quit=self.close,
+            on_open_rules=self._on_tray_open_rules,
+            on_quit=self._on_tray_quit,
         )
+
+    def _on_tray_open_rules(self) -> None:
+        self.show()
+        self.switch_to_tab(1)
+
+    def _on_tray_quit(self) -> None:
+        self.close()
 
     def switch_to_tab(self, index: int) -> None:
         """Switches current stacked screen and syncs nav button state."""

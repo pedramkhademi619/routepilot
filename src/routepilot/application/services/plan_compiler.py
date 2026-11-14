@@ -207,7 +207,7 @@ class PlanCompiler:
             try:
                 addr_info = socket.getaddrinfo(t, None, proto=socket.IPPROTO_TCP)
                 for item in addr_info:
-                    ip_str = item[4][0]
+                    ip_str = str(item[4][0])
                     if ip_str not in ips:
                         ips.append(ip_str)
             except Exception:
