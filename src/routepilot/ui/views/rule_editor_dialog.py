@@ -52,7 +52,7 @@ class RuleEditorDialog(QDialog):
         return self._saved_rule
 
     def _setup_ui(self) -> None:
-        t = self.i18n.tr
+        t = self.i18n.t
         is_fa = self.i18n.current_language == "fa"
 
         layout = QVBoxLayout(self)
@@ -60,7 +60,7 @@ class RuleEditorDialog(QDialog):
         layout.setSpacing(18)
 
         # Header
-        header = QLabel(t("editor.title_new") if not self.viewmodel._existing_rule else t("editor.title_edit"))
+        header = QLabel(t("editor.title_new") if not self.viewmodel.rule_id else t("editor.title_edit"))
         header.setObjectName("titleLabel")
         layout.addWidget(header)
 

@@ -82,6 +82,27 @@ def test_rules_view_add_and_render(mock_app: MainWindow) -> None:
     assert mock_app.rules_view.table.rowCount() == 1
 
 
+def test_rule_editor_dialog_instantiation(mock_app: MainWindow) -> None:
+    """Verifies that RuleEditorDialog opens without crashing for new and existing rules."""
+    from routepilot.ui.views.rule_editor_dialog import RuleEditorDialog
+
+    # Test opening dialog for creating a brand new rule
+    new_dialog = RuleEditorDialog(existing_rule=None, parent=mock_app)
+    assert new_dialog.viewmodel.rule_id is None
+    assert new_dialog.windowTitle() != ""
+
+    # Test opening dialog for editing an existing rule
+    rule = RoutingRule(
+        name="Existing Rule",
+        priority=10,
+        selector=TrafficSelector(type=SelectorType.DOMAIN, value="soft98.ir"),
+        action=PolicyAction(type=ActionType.USE_DIRECT),
+    )
+    edit_dialog = RuleEditorDialog(existing_rule=rule, parent=mock_app)
+    assert edit_dialog.viewmodel.rule_id == rule.id
+    assert edit_dialog.name_input.text() == "Existing Rule"
+
+
 def test_diagnostics_view_evaluation(mock_app: MainWindow) -> None:
     """Verifies that running diagnostics simulation renders the evaluation result."""
     rule = RoutingRule(
