@@ -78,7 +78,8 @@ def main() -> None:
     parser.add_argument("--mock", action="store_true", help="Use a simulated network (demo mode)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     args, qt_args = parser.parse_known_args()
-    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    logging.getLogger("routepilot").setLevel(logging.DEBUG if args.verbose else logging.INFO)
     sys.argv = [sys.argv[0], *qt_args]
     sys.exit(RoutePilotApp(use_mock=args.mock).run())
 

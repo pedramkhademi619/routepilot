@@ -33,10 +33,8 @@ class RoutePilotCli:
 
     def run(self, argv: list[str]) -> int:
         args = self._parser().parse_args(argv)
-        logging.basicConfig(
-            level=logging.DEBUG if args.verbose else logging.WARNING,
-            format="%(levelname)s %(name)s: %(message)s",
-        )
+        logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+        logging.getLogger("routepilot").setLevel(logging.DEBUG if args.verbose else logging.WARNING)
         self.policy_repo = JsonPolicyRepositoryAdapter(file_path=args.policy)
 
         if args.command in PRIVILEGED_COMMANDS:
