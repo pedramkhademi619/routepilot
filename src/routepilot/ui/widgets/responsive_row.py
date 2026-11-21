@@ -19,7 +19,7 @@ class ResponsiveRow(QWidget):
 
     @property
     def is_stacked(self) -> bool:
-        return self._layout.direction() == QBoxLayout.Direction.TopToBottom
+        return bool(self._layout.direction() == QBoxLayout.Direction.TopToBottom)
 
     def resizeEvent(self, event: QResizeEvent | None) -> None:  # noqa: N802
         super().resizeEvent(event)

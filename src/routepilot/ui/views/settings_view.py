@@ -114,7 +114,7 @@ class SettingsView(BasePage):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
-        return answer == QMessageBox.StandardButton.Yes
+        return bool(answer == QMessageBox.StandardButton.Yes)
 
     def _on_emergency_reset_clicked(self) -> None:
         if self._confirm("settings.confirm_reset_title", "settings.confirm_reset_body"):

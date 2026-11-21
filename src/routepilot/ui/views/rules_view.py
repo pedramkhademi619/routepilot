@@ -154,7 +154,7 @@ class RulesView(BasePage):
     def eventFilter(self, watched: QObject | None, event: QEvent | None) -> bool:  # noqa: N802
         if watched is self.table and event is not None and event.type() == QEvent.Type.Resize:
             self._update_visible_columns()
-        return super().eventFilter(watched, event)
+        return bool(super().eventFilter(watched, event))
 
     def _update_visible_columns(self) -> None:
         width = self.table.width()

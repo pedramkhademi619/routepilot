@@ -65,7 +65,7 @@ class RoutePilotApp:
     def run(self) -> int:
         self.main_window.show()
         self.refresher.start()
-        return self.app.exec()
+        return int(self.app.exec())
 
     def _on_system_scheme_changed(self) -> None:
         if self.theme_manager.theme == "system":

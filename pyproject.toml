@@ -113,6 +113,14 @@ warn_unused_ignores = true
 module = ["pyroute2.*", "dbus_fast.*"]
 ignore_missing_imports = true
 
+# PyQt6's bundled stubs change incompatibly between patch releases (e.g. 6.12.0 -> 6.12.1),
+# so Qt types are treated as Any; our own code is still checked strictly.
+[[tool.mypy.overrides]]
+module = ["PyQt6.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 minversion = "7.0"
 addopts = "-ra -q"

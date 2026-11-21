@@ -78,4 +78,4 @@ class FlowLayout(QLayout):
             x += hint.width() + spacing
             line_height = max(line_height, hint.height())
 
-        return y + line_height - rect.y() + margins.bottom()
+        return int(y + line_height - rect.y() + margins.bottom())
