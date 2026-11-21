@@ -1,0 +1,20 @@
+[Desktop Entry]
+Type=Application
+Name=RoutePilot
+GenericName=Split Tunneling
+GenericName[fa]=مسیریابی هوشمند ترافیک
+Comment=Send chosen domains and IP ranges around (or through) your VPN
+Comment[fa]=عبور انتخابی دامنه‌ها و رنج‌های IP از کنار VPN
+Exec=routepilot-gui
+Icon=routepilot
+Terminal=false
+Categories=Network;
+Keywords=vpn;bypass;split-tunnel;split tunneling;routing;network;
+StartupNotify=true
+StartupWMClass=RoutePilot
+Actions=EmergencyReset;
+
+[Desktop Action EmergencyReset]
+Name=Reset RoutePilot network state
+Name[fa]=بازنشانی وضعیت شبکه RoutePilot
+Exec=routepilot-recover

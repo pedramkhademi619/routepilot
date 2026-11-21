@@ -1,0 +1,36 @@
+name: Bug report
+description: Something does not route, crashes or looks wrong
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Create a rule …
+        2. Click "Apply to System" …
+  - type: input
+    id: distro
+    attributes:
+      label: Distribution and desktop
+      placeholder: e.g. Ubuntu 24.04, KDE Plasma 6
+    validations:
+      required: true
+  - type: input
+    id: vpn
+    attributes:
+      label: VPN client
+      placeholder: e.g. NetworkManager OpenVPN, wg-quick, sing-box TUN
+  - type: textarea
+    id: plan
+    attributes:
+      label: Output of `routepilot plan` and `routepilot --version`
+      description: Remove anything private. For crashes, include the terminal output of `routepilot-gui -v`.
+      render: text

@@ -1,47 +1,49 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
 name = "routepilot"
-version = "0.1.0"
-description = "Production-grade Linux desktop utility for selective VPN bypass and traffic policy routing"
+dynamic = ["version"]
+description = "Split tunneling for Linux desktops: send chosen domains and IP ranges around (or through) your VPN"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "GPL-3.0-or-later" }
-authors = [
-    { name = "RoutePilot Contributors", email = "maintainers@routepilot.local" }
-]
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "pedramkhademi619" }]
 keywords = [
     "linux",
-    "networking",
     "vpn",
-    "bypass",
     "split-tunneling",
-    "nftables",
+    "vpn-bypass",
     "policy-routing",
+    "nftables",
+    "networkmanager",
     "pyqt6",
-    "networkmanager"
+    "routing",
+    "split-dns",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: X11 Applications :: Qt",
     "Intended Audience :: End Users/Desktop",
     "Intended Audience :: System Administrators",
-    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Natural Language :: English",
+    "Natural Language :: Persian",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: System :: Networking",
-    "Topic :: System :: Networking :: Firewalls"
+    "Topic :: System :: Networking :: Firewalls",
+    "Typing :: Typed",
 ]
-
 dependencies = [
     "PyQt6>=6.6.0",
     "pydantic>=2.5.0",
     "dbus-fast>=2.20.0",
-    "pyroute2>=0.7.0"
+    "pyroute2>=0.7.0",
 ]
 
 [project.optional-dependencies]
@@ -49,19 +51,32 @@ dev = [
     "pytest>=8.0.0",
     "pytest-qt>=4.4.0",
     "pytest-asyncio>=0.23.0",
-    "pytest-mock>=3.12.0",
     "ruff>=0.4.0",
-    "mypy>=1.10.0"
+    "mypy>=1.10.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/pedramkhademi619/routepilot"
+Repository = "https://github.com/pedramkhademi619/routepilot"
+Issues = "https://github.com/pedramkhademi619/routepilot/issues"
+Changelog = "https://github.com/pedramkhademi619/routepilot/blob/main/CHANGELOG.md"
 
 [project.scripts]
 routepilot = "routepilot.cli.main:main"
-routepilot-gui = "routepilot.ui.app:main"
-routepilot-serviced = "routepilot.service.daemon:main"
+routepilot-apply = "routepilot.cli.apply:main"
 routepilot-recover = "routepilot.cli.recover:main"
+
+[project.gui-scripts]
+routepilot-gui = "routepilot.ui.app:main"
+
+[tool.hatch.version]
+path = "src/routepilot/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/routepilot"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "packaging", "scripts", "docs", "README.md", "LICENSE", "CHANGELOG.md"]
 
 [tool.ruff]
 line-length = 100
@@ -95,19 +110,13 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
-module = [
-    "pyroute2.*",
-    "dbus_fast.*",
-    "PyQt6.*"
-]
+module = ["pyroute2.*", "dbus_fast.*"]
 ignore_missing_imports = true
-ignore_errors = true
-follow_imports = "skip"
 
 [tool.pytest.ini_options]
 minversion = "7.0"
 addopts = "-ra -q"
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
