@@ -18,5 +18,7 @@ Adopt **Native Linux Policy Routing and nftables** as the primary networking eng
 4. **Licensing Simplicity:** Avoids complex GPL/MPL/Apache dependency licensing interactions with proxy core runtimes.
 
 ## Consequences
-- Requires root privileges / `CAP_NET_ADMIN` mediated via an authenticated system service.
+- Requires root privileges / `CAP_NET_ADMIN`; the GUI never runs as root and asks polkit
+  (`pkexec`) to run the one-shot `routepilot apply` command instead.
 - Domain routing requires DNS-to-IP resolution sets, with documented CDN/Anycast limitations.
+- The concrete table/rule layout is described in [ADR 0006](0006-destination-override-tables.md).

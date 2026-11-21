@@ -1,122 +1,101 @@
 # RoutePilot: Security Architecture and Threat Model
 
-**Author:** RoutePilot Security Engineering  
-**Revision:** 1.0 (Phase 0)  
-**Classification:** Public Security Specification  
+This document describes how RoutePilot separates privileges, which kernel resources it owns,
+and the threats it is designed against. It reflects the code as of version 0.2.
 
 ---
 
-## 1. System Architecture & Privilege Separation
-
-Running desktop networking tools as `root` is a critical security vulnerability. RoutePilot enforces strict privilege separation between the user interface and system mutation services.
+## 1. Architecture & Privilege Separation
 
 ```
-+-------------------------------------------------------------+
-|                 Unprivileged Desktop (UID 1000)             |
-|                                                             |
-|   +---------------------+        +----------------------+   |
-|   |  PyQt6 Desktop GUI  | <----> |  RoutePilot Core CLI |   |
-|   +---------------------+        +----------------------+   |
-|              |                                              |
-|              v (Structured IPC Request)                     |
-+-------------------------------------------------------------+
-               |  Unix Domain Socket (/run/routepilot/ipc.sock)
-               |  Authenticated via SO_PEERCRED & Polkit
-+-------------------------------------------------------------+
-|                 Privileged Service (UID 0 / CAP_NET_ADMIN)  |
-|                                                             |
-|   +-----------------------------------------------------+   |
-|   |             routepilot-serviced Daemon              |   |
-|   |                                                     |   |
-|   |   - Schema & Range Validation                       |   |
-|   |   - Atomic Plan Compiler                            |   |
-|   |   - Transaction Journal & Automatic Rollback        |   |
-|   |   - Isolated nftables: `table inet routepilot`      |   |
-|   |   - Policy Routing Tables: `table 10001..10099`     |   |
-|   +-----------------------------------------------------+   |
-+-------------------------------------------------------------+
++---------------------------------------------------------------+
+|  Desktop session (unprivileged user)                          |
+|                                                               |
+|   PyQt6 GUI  ──edits──>  ~/.config/routepilot/policy.json     |
+|      │                                                        |
+|      └─ QProcess: python -m routepilot --policy <file> apply  |
++------│--------------------------------------------------------+
+       │  pkexec (polkit authentication dialog, auth_admin)
++------▼--------------------------------------------------------+
+|  One-shot privileged process (root, exits when done)          |
+|                                                               |
+|   PolicyApplyService ─> PlanCompiler ─> ReconciliationService |
+|     • discovers links via NetworkManager D-Bus / netlink      |
+|     • resolves domains through the target link's DNS          |
+|     • writes the plan journal to /run/routepilot (tmpfs)      |
+|     • converges only RoutePilot-owned kernel resources        |
++---------------------------------------------------------------+
 ```
 
-### 1.1 Unprivileged User Tier
-- The PyQt6 graphical interface, system tray, configuration viewmodels, and desktop presentation run strictly within the desktop user's unprivileged session.
-- The UI never invokes `sudo` or `pkexec` directly on arbitrary bash scripts.
-- The UI communicates with the privileged service via an authenticated Unix Domain Socket or system D-Bus.
+* The GUI never runs as root and never builds shell commands. It starts exactly one program,
+  the RoutePilot CLI, with a fixed argument list.
+* The privileged CLI re-reads and re-validates the policy file itself; nothing the GUI computed
+  is trusted.
+* There is no long-running privileged daemon. (A service with signal-driven re-apply on network
+  changes is on the roadmap.)
 
-### 1.2 Privileged Service Tier (`routepilot-serviced`)
-- Runs as a systemd service (`routepilot.service`) with bounded capabilities (`CAP_NET_ADMIN`, `CAP_NET_RAW`).
-- Validates all incoming IPC payloads using strict schemas before performing any kernel mutation.
-- Enforces Polkit authorization (`org.routepilot.policy.apply`) for unprivileged callers.
-- Only mutates its own designated resources:
-  - Netfilter: Exclusively creates, updates, and deletes `table inet routepilot`. Never touches or flushes existing tables (`table inet filter`, `table inet ufw`, etc.).
-  - Routing Tables: Exclusively uses routing table IDs in the reserved range `10001`–`10099`.
-  - Routing Rules: Exclusively uses ip rule priorities in range `10000`–`10099`.
-  - Marks: Allocates a dedicated bitmask (e.g., `0x00ff0000` or mark values `0x10`–`0x90`).
+### 1.1 Resources RoutePilot owns (and the only ones it changes)
+
+| Resource | Identifier |
+| :-- | :-- |
+| ip rules | priorities `4810` (lookup `10001`) and `4820` (lookup `10002`), IPv4 and IPv6 |
+| routing tables | `10001` (overrides), `10002` (fail-closed guards) |
+| nftables | `table inet routepilot` only — `ufw`, `firewalld`, Docker and other tables are never touched |
+| systemd-resolved | `~domain` routing domains it added, on the link it added them to; other link domains are preserved |
+| state | `/run/routepilot/journal.json` (root, tmpfs) |
+
+`routepilot reset` removes all of the above. Upgrading from 0.1.x additionally removes the old
+priority `10010` rule and the main-table host routes recorded by 0.1.x.
 
 ---
 
-## 2. Threat Analysis & Mitigations
+## 2. Threats & Mitigations
 
-### 2.1 Threat: Command Injection & Arbitrary Shell Execution
-- **Risk:** Malicious connection names, domain names, or application paths passed to `subprocess.run(shell=True)`.
-- **Mitigation:**
-  - `shell=True` is strictly banned across the entire codebase.
-  - Netlink operations (routing tables, rules) are performed via binary Netlink sockets using `pyroute2`.
-  - Nftables rulesets are compiled in memory and loaded atomically via standard input to `nft -f -` with strict parameter validation.
-  - Pydantic models validate all inputs against strict regexes (valid IPv4/IPv6 CIDRs, RFC 1123 domain names, systemd unit name constraints).
+### 2.1 Command injection
+* `shell=True` is never used. External tools (`nft`, `resolvectl`, `pkexec`) receive argument
+  lists; nftables rulesets are passed on standard input.
+* Routes and rules are programmed through netlink (`pyroute2`), not by invoking `ip`.
+* Everything written into a ruleset or route is first parsed by `ipaddress` (CIDRs/addresses);
+  domain selectors must match an RFC 1123 hostname pattern.
 
-### 2.2 Threat: Accidental Routing Loops & VPN Transport Breakage
-- **Risk:** If RoutePilot routes all traffic destined for a VPN server IP through that same VPN, an infinite routing loop occurs and the connection collapses.
-- **Mitigation:**
-  - RoutePilot automatically queries NetworkManager for the VPN gateway/server endpoint IP (e.g. `203.0.113.50`).
-  - Explicit high-priority bypass routes are automatically pinned to the physical underlay interface for all active VPN server endpoints.
+### 2.2 Traffic leaks when a path disappears
+* Fail-closed is the default fallback. For such rules RoutePilot installs `unreachable` routes in
+  table `10002`; when the chosen link goes down the kernel deletes its override routes and the
+  lookup hits the guard instead of following the VPN or the default route.
+* If applying fails half-way, RoutePilot tears down **all** of its state and reports the error,
+  so the system returns to its normal routing rather than a partial policy.
+* Limitation: rules are compiled when you apply. If the *set* of links changes (e.g. a different
+  Wi-Fi), apply again (the GUI re-applies after every rule change).
 
-### 2.3 Threat: VPN Kill-Switch Evasion & Leakage
-- **Risk:** If a VPN disconnects, traffic intended for that VPN might silently spill out onto unencrypted public Wi-Fi.
-- **Mitigation:**
-  - RoutePilot implements **Fail-Closed** as the default action.
-  - In nftables, rules destined for an offline VPN interface jump to a `reject` or `drop` verdict chain.
-  - Rollback mechanisms ensure that if a routing transaction fails or crashes mid-flight, fail-closed rules remain active until cleanly resolved.
+### 2.3 Routing loops
+* A "VPN only" rule never routes the VPN's own server endpoint into the tunnel when the endpoint
+  is known; such destinations are skipped with a warning.
+* Bypass rules may legitimately include the VPN endpoint — that path is already direct.
 
-### 2.4 Threat: Service Crash or Desynchronization
-- **Risk:** Daemon or GUI crashes leaving orphaned routes or broken connectivity.
-- **Mitigation:**
-  - **Transaction Journal:** Every state change writes an intent record to `/run/routepilot/journal.json` prior to execution.
-  - **Reconciliation on Startup:** When `routepilot-serviced` starts, it reads the journal, inspects live kernel state, and reconciles or resets orphaned `routepilot` resources.
-  - **Emergency Recovery CLI:** A standalone recovery tool (`routepilot-recover`) can be executed at any time to purge all RoutePilot tables and rules without affecting other system configurations.
+### 2.4 Local privilege escalation via the policy file
+* The policy file is user-writable by design; root only reads it and validates it with Pydantic.
+  A malicious policy can at most express routes/blocks the user could request anyway, and every
+  run requires administrator authentication through polkit.
+* When installed per-user (the default `scripts/install_desktop.sh`), `pkexec` runs the Python
+  interpreter of the user's virtual environment. Anyone who can modify that environment can
+  modify what runs as root the next time the user authenticates — exactly as with any
+  user-installed admin tool. On shared or hardened machines, install RoutePilot system-wide
+  (root-owned) instead.
+
+### 2.5 Crash or desynchronization
+* Kernel changes are idempotent: re-applying the same plan is a no-op, and stale routes from
+  earlier plans are removed by diffing the owned tables.
+* The journal lives on tmpfs, so it disappears together with the (non-persistent) kernel state at
+  reboot.
+* `routepilot reset` / the "Reset Network State" button / the desktop action
+  "Reset RoutePilot network state" always restore a clean state.
+
+### 2.6 Privacy
+* No telemetry, analytics or network calls other than DNS lookups for your own domain rules.
+* The diagnostics bundle excludes connection names, addresses, rule names and rule targets.
 
 ---
 
-## 3. Polkit Action Definition
+## 3. Reporting
 
-File: `/usr/share/polkit-1/actions/org.routepilot.policy.policy`
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE policyconfig PUBLIC
- "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
- "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
-<policyconfig>
-  <vendor>RoutePilot Project</vendor>
-  <vendor_url>https://github.com/routepilot/routepilot</vendor_url>
-
-  <action id="org.routepilot.policy.apply">
-    <description>Apply network routing policies</description>
-    <message>Authentication is required to apply RoutePilot traffic routing rules</message>
-    <defaults>
-      <allow_any>auth_admin</allow_any>
-      <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
-    </defaults>
-  </action>
-
-  <action id="org.routepilot.policy.recover">
-    <description>Emergency reset of RoutePilot routing state</description>
-    <message>Authentication is required to reset RoutePilot routing state</message>
-    <defaults>
-      <allow_any>auth_admin</allow_any>
-      <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
-    </defaults>
-  </action>
-</policyconfig>
-```
+Please report vulnerabilities privately, see [SECURITY.md](../../SECURITY.md).

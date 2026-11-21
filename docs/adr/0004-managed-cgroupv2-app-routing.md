@@ -1,7 +1,8 @@
 # ADR 0004: Managed Application Launch via systemd cgroup v2 Scopes
 
 ## Status
-Accepted
+Proposed — not implemented yet. Application selectors are accepted in the policy file but
+skipped (with a warning) when applying. Implementation also needs source NAT, see ADR 0006.
 
 ## Context
 Routing individual applications is a core user goal. Naive approaches (matching executable name in `/proc` or scraping PIDs) fail because:

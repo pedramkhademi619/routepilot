@@ -1,26 +1,29 @@
 # Security Policy
 
-## Supported Versions
+## Supported versions
 
-| Version | Supported          |
-| :---    | :---               |
-| 0.1.x   | :white_check_mark: |
+| Version | Supported |
+| :------ | :-------: |
+| 0.2.x   | ✅ |
+| < 0.2   | ❌ (please upgrade; 0.1.x wrote root-owned state to `/tmp`) |
 
----
+## Reporting a vulnerability
 
-## Reporting a Vulnerability
+RoutePilot runs a privileged helper and changes kernel routing, so we take reports about
+privilege escalation, traffic leaks, injection or unsafe file handling seriously.
 
-The RoutePilot team takes the security of Linux desktop networking seriously. If you discover a security vulnerability (such as privilege escalation, unintended route leakage, or command injection), please report it responsibly.
+**Please do not open a public issue for security problems.** Instead, use GitHub's
+[private vulnerability reporting](https://github.com/pedramkhademi619/routepilot/security/advisories/new).
 
-**Please do NOT file a public issue on GitHub for undisclosed security vulnerabilities.**
+Helpful details:
 
-Instead, please email:
-`security@routepilot.local` (or submit a Private Vulnerability Advisory on GitHub).
+1. What is affected and the impact (e.g. local privilege escalation, traffic leaking outside
+   the intended path).
+2. Steps to reproduce or a proof of concept.
+3. Distribution, kernel version, NetworkManager version and the VPN client involved.
+4. Output of `routepilot plan` (remove anything private).
 
-Include:
-1. Description of the vulnerability.
-2. Steps to reproduce or proof-of-concept.
-3. Impact assessment (e.g., local privilege escalation, traffic leakage).
-4. System details (kernel version, distribution, NetworkManager version).
+You should get an acknowledgement within a few days. Fixes are released as soon as possible and
+credited in the changelog unless you prefer otherwise.
 
-We commit to acknowledging your report within 48 hours and providing a remediation timeline before public disclosure.
+The design assumptions are documented in [docs/security/threat_model.md](docs/security/threat_model.md).
