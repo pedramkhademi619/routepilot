@@ -142,10 +142,11 @@ Rules are stored in `~/.config/routepilot/policy.json`:
 ## How it works
 
 ```mermaid
-flowchart LR
+flowchart TB
     GUI["Desktop app<br/>(unprivileged)"] -- edits --> P[(policy.json)]
     GUI -- "pkexec routepilot apply" --> A
     subgraph A["One-shot privileged helper"]
+        direction LR
         D["Discover links<br/>NetworkManager / netlink"] --> R["Resolve domains<br/>via the target link's DNS"]
         R --> C["Compile plan"] --> K["Converge kernel state<br/>(diff, rollback on error)"]
     end
