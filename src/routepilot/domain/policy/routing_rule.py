@@ -43,6 +43,8 @@ class RoutingRule(BaseModel):
             cond = "whenever any VPN is connected"
         elif self.condition.type == ConditionType.SPECIFIC_VPN_ACTIVE:
             cond = f"when VPN {self.condition.target_vpn_uuid or 'selected'} is connected"
+        elif self.condition.type == ConditionType.NETWORK_PROFILE_ACTIVE:
+            cond = f"while network '{self.condition.target_profile_name or 'selected'}' is active"
 
         fail = (
             "blocks traffic"

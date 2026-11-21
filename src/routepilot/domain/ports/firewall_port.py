@@ -1,26 +1,18 @@
-"""Port interface for packet marking and netfilter firewall."""
+"""Port interface for netfilter (nftables) packet filtering."""
 
 from abc import ABC, abstractmethod
 
 
 class FirewallPort(ABC):
-    """Port interface for interacting with netfilter/nftables."""
+    """Port interface for the isolated ``table inet routepilot``."""
 
     @abstractmethod
     def apply_ruleset(self, ruleset_content: str) -> None:
-        """Applies a complete ruleset atomically within table inet routepilot."""
+        """Atomically replaces table inet routepilot with ``ruleset_content``."""
 
     @abstractmethod
     def flush_routepilot_table(self) -> None:
-        """Purges only table inet routepilot without affecting system firewalls."""
-
-    @abstractmethod
-    def add_set_elements(self, set_name: str, elements: list[str]) -> None:
-        """Adds IP addresses or subnets to a named nftables set."""
-
-    @abstractmethod
-    def remove_set_elements(self, set_name: str, elements: list[str]) -> None:
-        """Removes IP addresses or subnets from a named nftables set."""
+        """Removes only table inet routepilot without affecting system firewalls."""
 
     @abstractmethod
     def is_table_present(self) -> bool:

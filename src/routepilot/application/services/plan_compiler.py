@@ -1,220 +1,251 @@
-"""Compiler transforming domain rules into an atomic RoutePilotPlan."""
+"""Compiler transforming domain rules into a declarative RoutePilotPlan."""
 
-import socket
+import ipaddress
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 
-from routepilot.application.services.routepilot_plan import RoutePilotPlan
+from routepilot.application.services.egress_resolver import EgressResolver
+from routepilot.application.services.routing_layout import RoutingLayout
 from routepilot.domain.models.network_connection import NetworkConnection
 from routepilot.domain.models.route_entry import RouteEntry
+from routepilot.domain.models.route_type import RouteType
+from routepilot.domain.models.routepilot_plan import RoutePilotPlan
+from routepilot.domain.models.rpdb_rule import RpdbRule
 from routepilot.domain.policy.action_type import ActionType
-from routepilot.domain.policy.condition_type import ConditionType
 from routepilot.domain.policy.failure_behavior import FailureBehavior
 from routepilot.domain.policy.routing_rule import RoutingRule
 from routepilot.domain.policy.selector_type import SelectorType
 
+IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
+
 
 class PlanCompiler:
-    """Compiles policy rules and active network state into an atomic kernel execution plan."""
+    """Compiles policy rules and live network state into the kernel state RoutePilot owns.
 
-    BASE_TABLE_ID = 10001
-    BASE_RULE_PRIO = 10000
-    MARK_MASK = 0x00FF0000
+    Compilation is pure: domain names must be resolved beforehand (see
+    :meth:`resolution_requests`) and passed in, which keeps the compiler deterministic and
+    unit-testable without network access.
+    """
+
+    def __init__(self, egress: EgressResolver | None = None) -> None:
+        self._egress = egress or EgressResolver()
+
+    def resolution_requests(
+        self, rules: list[RoutingRule], connections: list[NetworkConnection]
+    ) -> dict[str, str | None]:
+        """Returns hostnames to resolve, mapped to the interface whose DNS should answer.
+
+        Resolving through the target link's own DNS servers returns the addresses that
+        clients on that path will actually connect to (important for geo-DNS and CDNs).
+        """
+        requests: dict[str, str | None] = {}
+        for rule in self._enforceable(rules, connections):
+            if not rule.selector.is_domain:
+                continue
+            target = self._egress.resolve(rule, connections)
+            interface = target.interface if target else None
+            for hostname in rule.selector.hostnames():
+                requests.setdefault(hostname, interface)
+        return requests
 
     def compile(
-        self, rules: list[RoutingRule], active_connections: list[NetworkConnection]
+        self,
+        rules: list[RoutingRule],
+        connections: list[NetworkConnection],
+        resolved: Mapping[str, Sequence[str]] | None = None,
     ) -> RoutePilotPlan:
-        """Generates an atomic plan representing routing tables, ip rules, and nftables configuration."""
-        {conn.uuid: conn for conn in active_connections}
-        active_vpn_uuids: set[str] = {c.uuid for c in active_connections if c.is_vpn}
+        """Generates the routes, ip rules, nftables table and split DNS for ``rules``."""
+        resolved = resolved or {}
+        routes: list[RouteEntry] = []
+        blocked: list[IPNetwork] = []
+        split_dns: dict[str, list[str]] = {}
+        summary: list[str] = []
+        warnings: list[str] = []
+        claimed: set[IPNetwork] = set()
 
-        direct_conn = next((c for c in active_connections if c.is_eligible_direct), None)
-
-        tables_to_create: dict[int, RouteEntry] = {}
-        rules_to_add: list[dict[str, int]] = []
-        summary_lines: list[str] = []
-
-        # Allocate table for direct physical egress if direct connection exists
-        direct_table_id = self.BASE_TABLE_ID
-        direct_mark = 0x10
-        if direct_conn and direct_conn.ip4_config and direct_conn.ip4_config.gateway:
-            tables_to_create[direct_table_id] = RouteEntry(
-                destination="0.0.0.0/0",
-                gateway=direct_conn.ip4_config.gateway,
-                interface=direct_conn.interface,
-                metric=10,
-                table_id=direct_table_id,
-            )
-            rules_to_add.append(
-                {
-                    "table_id": direct_table_id,
-                    "priority": self.BASE_RULE_PRIO + 10,
-                    "fwmark": direct_mark,
-                    "fwmask": self.MARK_MASK,
-                    "family": 4,
-                }
-            )
-            summary_lines.append(
-                f"Configured direct routing table {direct_table_id} via {direct_conn.interface} "
-                f"gw {direct_conn.ip4_config.gateway}"
-            )
-
-        # Build CIDR sets for nftables
-        bypass_v4_elements: list[str] = []
-        bypass_v6_elements: list[str] = []
-        block_v4_elements: list[str] = []
-        block_v6_elements: list[str] = []
-        cgroup_matches: list[str] = []
-        split_dns_links: dict[str, list[str]] = {}
-
-        for rule in sorted(rules, key=lambda r: (r.priority, r.id)):
-            if not rule.enabled:
+        for rule in self._enforceable(rules, connections):
+            if rule.selector.type == SelectorType.APPLICATION:
+                warnings.append(
+                    f"Rule '{rule.name}': per-application routing is not enforced yet; skipped."
+                )
                 continue
 
-            # Check activation condition
-            if rule.condition.type == ConditionType.ANY_VPN_ACTIVE and not active_vpn_uuids:
+            networks = self._networks_for(rule, resolved)
+            if not networks:
+                warnings.append(f"Rule '{rule.name}': could not resolve '{rule.selector.value}'.")
                 continue
-            if rule.condition.type == ConditionType.SPECIFIC_VPN_ACTIVE:
-                if (
-                    not rule.condition.target_vpn_uuid
-                    or rule.condition.target_vpn_uuid not in active_vpn_uuids
-                ):
-                    continue
 
-            # Action evaluation
-            if rule.action.type == ActionType.USE_DIRECT:
-                if direct_conn:
-                    if rule.selector.type in (SelectorType.IP_ADDRESS, SelectorType.CIDR):
-                        val = rule.selector.value
-                        if ":" in val:
-                            bypass_v6_elements.append(val)
-                        else:
-                            bypass_v4_elements.append(val)
-                    elif rule.selector.type in (
-                        SelectorType.DOMAIN,
-                        SelectorType.DOMAIN_AND_SUBDOMAINS,
-                    ):
-                        resolved_ips = self._resolve_domain_ips(rule.selector.value)
-                        for rip in resolved_ips:
-                            if ":" in rip:
-                                bypass_v6_elements.append(rip)
-                            else:
-                                bypass_v4_elements.append(rip)
-                        if direct_conn.interface not in split_dns_links:
-                            split_dns_links[direct_conn.interface] = []
-                        split_dns_links[direct_conn.interface].append(
-                            rule.selector.value.lstrip("*.")
-                        )
-                    elif rule.selector.type == SelectorType.APPLICATION:
-                        cgroup_matches.append(
-                            f'socket cgroupv2 level 2 "user.slice/user-1000.slice/user@1000.service/app.slice/routepilot-app-{rule.selector.value}.scope" meta mark set {hex(direct_mark)}'
-                        )
-                    summary_lines.append(
-                        f"Rule '{rule.name}': Direct bypass via {direct_conn.interface}"
-                    )
-                else:
-                    # Direct connection missing
-                    if rule.fallback.behavior == FailureBehavior.BLOCK:
-                        if ":" in rule.selector.value:
-                            block_v6_elements.append(rule.selector.value)
-                        else:
-                            block_v4_elements.append(rule.selector.value)
-                        summary_lines.append(
-                            f"Rule '{rule.name}': Target unavailable -> fail-closed (blocked)"
-                        )
+            fresh = [n for n in networks if n not in claimed]
+            if len(fresh) < len(networks):
+                warnings.append(
+                    f"Rule '{rule.name}': {len(networks) - len(fresh)} destination(s) already "
+                    f"claimed by a higher-priority rule (shared CDN address?)."
+                )
+            claimed.update(fresh)
+            if not fresh:
+                continue
 
-            elif rule.action.type == ActionType.BLOCK:
-                if rule.selector.type in (SelectorType.IP_ADDRESS, SelectorType.CIDR):
-                    val = rule.selector.value
-                    if ":" in val:
-                        block_v6_elements.append(val)
-                    else:
-                        block_v4_elements.append(val)
-                summary_lines.append(f"Rule '{rule.name}': Explicitly blocked")
+            action = rule.action.type
+            if action == ActionType.BLOCK:
+                blocked.extend(fresh)
+                summary.append(f"Rule '{rule.name}': blocking {len(fresh)} destination(s)")
+                continue
 
-        # Synthesize nftables ruleset
-        v4_elems_str = ", ".join(bypass_v4_elements) if bypass_v4_elements else ""
-        block_v4_str = ", ".join(block_v4_elements) if block_v4_elements else ""
+            if action == ActionType.FOLLOW_SYSTEM:
+                for table in RoutingLayout.owned_tables():
+                    routes.extend(self._route(n, table, RouteType.THROW) for n in fresh)
+                summary.append(f"Rule '{rule.name}': following system routing")
+                continue
 
-        nft_lines = [
-            "table inet routepilot {",
-            "    set bypass_v4 {",
-            "        type ipv4_addr",
-            "        flags interval",
-        ]
-        if bypass_v4_elements:
-            nft_lines.append(f"        elements = {{ {v4_elems_str} }}")
-        nft_lines.extend(
-            [
-                "    }",
-                "    set block_v4 {",
-                "        type ipv4_addr",
-                "        flags interval",
-            ]
-        )
-        if block_v4_elements:
-            nft_lines.append(f"        elements = {{ {block_v4_str} }}")
-        nft_lines.extend(
-            [
-                "    }",
-                "    chain routepilot_output {",
-                "        type route hook output priority mangle; policy accept;",
-            ]
-        )
-        if block_v4_elements:
-            nft_lines.append("        ip daddr @block_v4 drop")
-        if bypass_v4_elements:
-            nft_lines.append(f"        ip daddr @bypass_v4 meta mark set {hex(direct_mark)}")
-        for cg in cgroup_matches:
-            nft_lines.append(f"        {cg}")
-        nft_lines.extend(
-            [
-                "    }",
-                "}",
-            ]
-        )
-        nft_ruleset = "\n".join(nft_lines) + "\n"
+            target = self._egress.resolve(rule, connections)
+            if target is not None:
+                pinned = self._pin(rule, fresh, target, routes, warnings)
+                summary.append(
+                    f"Rule '{rule.name}': {pinned} destination(s) via {target.interface} "
+                    f"({target.id})"
+                )
+                if rule.selector.is_domain:
+                    links = split_dns.setdefault(target.interface, [])
+                    if rule.selector.root_domain not in links:
+                        links.append(rule.selector.root_domain)
+            else:
+                summary.append(f"Rule '{rule.name}': target unavailable")
 
-        rollback_tables = list(tables_to_create.keys())
-        rollback_rule_prios = [r["priority"] for r in rules_to_add]
+            if rule.fallback.behavior == FailureBehavior.BLOCK:
+                routes.extend(
+                    self._route(n, RoutingLayout.GUARD_TABLE, RouteType.UNREACHABLE) for n in fresh
+                )
+                if target is None:
+                    summary.append(f"Rule '{rule.name}': fail-closed, traffic refused")
 
         return RoutePilotPlan(
             created_at=datetime.now(UTC).isoformat(),
-            tables_to_create=tables_to_create,
-            rules_to_add=rules_to_add,
-            nft_ruleset_content=nft_ruleset,
-            split_dns_links=split_dns_links,
-            summary_lines=summary_lines,
-            rollback_tables=rollback_tables,
-            rollback_rule_priorities=rollback_rule_prios,
+            routes=routes,
+            rules=self._rules_for(routes),
+            nft_ruleset=self._nft_ruleset(blocked),
+            split_dns=split_dns,
+            summary_lines=summary,
+            warnings=warnings,
         )
 
-    def _resolve_domain_ips(self, domain_pattern: str) -> list[str]:
-        """Resolves IPv4 and IPv6 addresses for a domain and standard subdomains."""
-        clean = domain_pattern.lstrip("*.")
-        targets = [clean]
-        if "examplebank" in clean or domain_pattern.startswith("*."):
-            targets.extend(
-                [
-                    f"www.{clean}",
-                    f"ib.{clean}",
-                    f"ebank.{clean}",
-                    f"bpm.{clean}",
-                ]
-            )
+    def _enforceable(
+        self, rules: list[RoutingRule], connections: list[NetworkConnection]
+    ) -> list[RoutingRule]:
+        """Enabled rules whose activation condition holds, in deterministic priority order."""
+        return [
+            rule
+            for rule in sorted(rules, key=lambda r: (r.priority, r.id))
+            if rule.enabled and rule.condition.is_satisfied(connections)
+        ]
 
-        ips: list[str] = []
-        for t in targets:
+    def _networks_for(
+        self, rule: RoutingRule, resolved: Mapping[str, Sequence[str]]
+    ) -> list[IPNetwork]:
+        values = (
+            [rule.selector.value]
+            if rule.selector.is_network
+            else [ip for host in rule.selector.hostnames() for ip in resolved.get(host, [])]
+        )
+        networks: list[IPNetwork] = []
+        for value in values:
             try:
-                addr_info = socket.getaddrinfo(t, None, proto=socket.IPPROTO_TCP)
-                for item in addr_info:
-                    ip_str = str(item[4][0])
-                    if ip_str not in ips:
-                        ips.append(ip_str)
-            except Exception:
-                pass
+                network = ipaddress.ip_network(value, strict=False)
+            except ValueError:
+                continue
+            if network not in networks:
+                networks.append(network)
+        return networks
 
-        # For Bank Mellat, also include the well-known Mellat IP subnet 198.51.100.0/24
-        if "examplebank" in clean and not any("198.51.100" in ip for ip in ips):
-            ips.append("198.51.100.0/24")
+    def _pin(
+        self,
+        rule: RoutingRule,
+        networks: list[IPNetwork],
+        target: NetworkConnection,
+        routes: list[RouteEntry],
+        warnings: list[str],
+    ) -> int:
+        """Adds override routes towards ``target``; returns how many could be pinned."""
+        pinned = 0
+        endpoints = self._vpn_endpoints([target]) if target.is_vpn else []
+        for network in networks:
+            if any(endpoint in network for endpoint in endpoints):
+                warnings.append(
+                    f"Rule '{rule.name}': {network} contains the VPN server {target.interface} "
+                    f"connects to; routing it into the tunnel would loop. Skipped."
+                )
+                continue
+            # Tunnels are point-to-point: route by device. Physical links need their gateway.
+            gateway = None if target.is_vpn else target.gateway_for(network.version)
+            if not target.is_vpn and gateway is None:
+                warnings.append(
+                    f"Rule '{rule.name}': {target.interface} has no IPv{network.version} "
+                    f"gateway; {network} left to the system."
+                )
+                continue
+            routes.append(
+                RouteEntry(
+                    destination=str(network),
+                    gateway=gateway,
+                    interface=target.interface,
+                    table_id=RoutingLayout.OVERRIDE_TABLE,
+                )
+            )
+            pinned += 1
+        return pinned
 
-        return ips
+    @staticmethod
+    def _vpn_endpoints(
+        connections: list[NetworkConnection],
+    ) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+        endpoints = []
+        for conn in connections:
+            try:
+                if conn.server_endpoint:
+                    endpoints.append(ipaddress.ip_address(conn.server_endpoint))
+            except ValueError:
+                continue
+        return endpoints
+
+    @staticmethod
+    def _route(network: IPNetwork, table_id: int, route_type: RouteType) -> RouteEntry:
+        return RouteEntry(destination=str(network), table_id=table_id, route_type=route_type)
+
+    @staticmethod
+    def _rules_for(routes: list[RouteEntry]) -> list[RpdbRule]:
+        """One ip rule per (table, family) that actually has routes."""
+        used = sorted({(r.table_id, r.family) for r in routes})
+        return [
+            RpdbRule(
+                priority=RoutingLayout.priority_for_table(table_id),
+                table_id=table_id,
+                family=family,
+            )
+            for table_id, family in used
+        ]
+
+    @staticmethod
+    def _nft_ruleset(blocked: list[IPNetwork]) -> str | None:
+        """Builds table inet routepilot rejecting explicitly blocked destinations."""
+        if not blocked:
+            return None
+        v4 = ", ".join(str(n) for n in blocked if n.version == 4)
+        v6 = ", ".join(str(n) for n in blocked if n.version == 6)
+        lines = ["table inet routepilot {"]
+        for name, addr_type, elements in (
+            ("block_v4", "ipv4_addr", v4),
+            ("block_v6", "ipv6_addr", v6),
+        ):
+            lines += [f"    set {name} {{", f"        type {addr_type}", "        flags interval"]
+            lines += ["        auto-merge"]
+            if elements:
+                lines.append(f"        elements = {{ {elements} }}")
+            lines.append("    }")
+        lines += [
+            "    chain output {",
+            "        type filter hook output priority filter; policy accept;",
+            "        ip daddr @block_v4 reject",
+            "        ip6 daddr @block_v6 reject",
+            "    }",
+            "}",
+        ]
+        return "\n".join(lines) + "\n"

@@ -1,135 +1,80 @@
-"""Diagnostics View for policy evaluation, route tracing, and sanitized log export."""
+"""Diagnostics View for policy evaluation and sanitized support bundles."""
 
-from PyQt6.QtWidgets import (
-    QFileDialog,
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QPushButton,
-    QScrollArea,
-    QVBoxLayout,
-    QWidget,
-)
+from pathlib import Path
+
+from PyQt6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton
 
 from routepilot.application.services.policy_evaluation_result import PolicyEvaluationResult
-from routepilot.ui.translation_manager import TranslationManager
+from routepilot.ui.style import ThemeManager
 from routepilot.ui.viewmodels.diagnostics_viewmodel import DiagnosticsViewModel
+from routepilot.ui.views.base_page import BasePage
+from routepilot.ui.widgets.card import Card
 
 
-class DiagnosticsView(QWidget):
-    """View providing interactive policy evaluation simulation and diagnostic bundle export."""
+class DiagnosticsView(BasePage):
+    """Interactive policy evaluation and diagnostic bundle export."""
 
     def __init__(self, viewmodel: DiagnosticsViewModel) -> None:
         super().__init__()
         self.viewmodel = viewmodel
-        self.i18n = TranslationManager.instance()
+        self._result: PolicyEvaluationResult | None = None
 
-        self._setup_ui()
-        self.viewmodel.evaluation_completed.connect(self._render_result)
-        self.retranslate_ui()
-
-    def _setup_ui(self) -> None:
-        root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(20)
-
-        # Header
-        title_box = QVBoxLayout()
-        self.title = QLabel("Diagnostics & Route Evaluation")
-        self.title.setObjectName("titleLabel")
-        self.subtitle = QLabel(
-            "Verify how traffic to any destination IP or domain is evaluated against your active policies."
-        )
-        self.subtitle.setObjectName("subtitleLabel")
-        title_box.addWidget(self.title)
-        title_box.addWidget(self.subtitle)
-        layout.addLayout(title_box)
-
-        # Simulation Card
-        self.sim_card = QFrame()
-        self.sim_card.setObjectName("card")
-        sim_layout = QVBoxLayout(self.sim_card)
-        self.sim_title = QLabel("Simulate Policy Evaluation")
-        self.sim_title.setObjectName("cardTitle")
-        sim_layout.addWidget(self.sim_title)
-
+        self.sim_card = Card()
         input_row = QHBoxLayout()
         self.target_input = QLineEdit()
-        self.target_input.setPlaceholderText(
-            "Enter destination IP or domain (e.g. 198.51.100.1 or example.com)..."
-        )
+        self.target_input.setClearButtonEnabled(True)
         self.target_input.returnPressed.connect(self._on_evaluate_clicked)
-        input_row.addWidget(self.target_input)
-
-        self.eval_btn = QPushButton("Evaluate Path")
+        self.eval_btn = QPushButton()
         self.eval_btn.setObjectName("primaryButton")
         self.eval_btn.clicked.connect(self._on_evaluate_clicked)
+        input_row.addWidget(self.target_input, 1)
         input_row.addWidget(self.eval_btn)
-        sim_layout.addLayout(input_row)
+        self.sim_card.body.addLayout(input_row)
 
-        # Result box
-        self.result_frame = QFrame()
-        res_layout = QVBoxLayout(self.result_frame)
-        self.result_title = QLabel("Awaiting evaluation...")
-        self.result_title.setObjectName("cardTitle")
-        self.result_desc = QLabel(
-            "Enter a destination above to trace its effective kernel route and winning rule."
-        )
+        self.result_title = QLabel()
+        self.result_title.setObjectName("resultTitle")
+        self.result_title.setWordWrap(True)
+        self.result_desc = QLabel()
+        self.result_desc.setObjectName("mutedLabel")
         self.result_desc.setWordWrap(True)
-        self.result_desc.setStyleSheet("color: #A0AEC0;")
-        res_layout.addWidget(self.result_title)
-        res_layout.addWidget(self.result_desc)
-        sim_layout.addWidget(self.result_frame)
+        self.sim_card.body.addWidget(self.result_title)
+        self.sim_card.body.addWidget(self.result_desc)
+        self.content.addWidget(self.sim_card)
 
-        layout.addWidget(self.sim_card)
-
-        # Export Bundle Card
-        self.bundle_card = QFrame()
-        self.bundle_card.setObjectName("card")
-        bundle_layout = QVBoxLayout(self.bundle_card)
-        self.bundle_title = QLabel("Sanitized Support Bundle")
-        self.bundle_title.setObjectName("cardTitle")
-        self.bundle_desc = QLabel(
-            "Export an anonymized JSON report containing active interface types, metrics, and rule "
-            "definitions. All passwords, authentication tokens, and user credentials are automatically stripped."
-        )
+        self.bundle_card = Card()
+        self.bundle_desc = QLabel()
+        self.bundle_desc.setObjectName("mutedLabel")
         self.bundle_desc.setWordWrap(True)
-        self.bundle_desc.setStyleSheet("color: #A0AEC0;")
-
-        self.export_btn = QPushButton("Export Sanitized Bundle (.json)")
+        self.export_btn = QPushButton()
         self.export_btn.setObjectName("secondaryButton")
         self.export_btn.clicked.connect(self._on_export_clicked)
+        self.export_status = QLabel()
+        self.export_status.setObjectName("mutedLabel")
+        self.export_status.setWordWrap(True)
+        export_row = QHBoxLayout()
+        export_row.addWidget(self.export_btn)
+        export_row.addStretch()
+        self.bundle_card.body.addWidget(self.bundle_desc)
+        self.bundle_card.body.addLayout(export_row)
+        self.bundle_card.body.addWidget(self.export_status)
+        self.content.addWidget(self.bundle_card)
+        self.content.addStretch()
 
-        bundle_layout.addWidget(self.bundle_title)
-        bundle_layout.addWidget(self.bundle_desc)
-        bundle_layout.addWidget(self.export_btn)
-        layout.addWidget(self.bundle_card)
-
-        layout.addStretch()
-
-        scroll.setWidget(container)
-        root_layout.addWidget(scroll)
+        self.viewmodel.evaluation_completed.connect(self._render_result)
 
     def retranslate_ui(self) -> None:
-        """Dynamically retranslates texts in DiagnosticsView."""
-        t = self.i18n.tr
-        self.title.setText(t("diagnostics.title"))
-        self.subtitle.setText(t("diagnostics.subtitle"))
-        self.sim_title.setText(t("diagnostics.sim_title"))
+        t = self.i18n.t
+        self.header.set_text(t("diagnostics.title"), t("diagnostics.subtitle"))
+        self.sim_card.set_title(t("diagnostics.sim_title"))
         self.target_input.setPlaceholderText(t("diagnostics.input_placeholder"))
         self.eval_btn.setText(t("diagnostics.eval_btn"))
-        self.bundle_title.setText(t("diagnostics.bundle_title"))
+        self.bundle_card.set_title(t("diagnostics.bundle_title"))
         self.bundle_desc.setText(t("diagnostics.bundle_desc"))
         self.export_btn.setText(t("diagnostics.export_btn"))
+        if self._result:
+            self._render_result(self._result)
+        else:
+            self._set_result_state("", t("diagnostics.awaiting"), t("diagnostics.awaiting_desc"))
 
     def _on_evaluate_clicked(self) -> None:
         target = self.target_input.text().strip()
@@ -137,35 +82,37 @@ class DiagnosticsView(QWidget):
             self.viewmodel.evaluate_target(target)
 
     def _render_result(self, result: PolicyEvaluationResult) -> None:
-        is_fa = self.i18n.current_language == "fa"
+        t = self.i18n.t
+        self._result = result
+        details = [result.explanation]
+        if result.target_connection and not result.is_blocked:
+            conn = result.target_connection
+            label = self.i18n.ltr(f"{conn.id} ({conn.interface})")
+            details.append(t("diagnostics.result_egress", conn=label))
+        details += result.conflicts
         if result.is_blocked:
-            self.result_title.setText(
-                "نتیجه: مسدود شد (ترافیک بلاک گردید)"
-                if is_fa
-                else "Result: BLOCKED (Traffic Dropped)"
-            )
-            self.result_title.setStyleSheet("color: #FC8181; font-weight: 700;")
+            title = t("diagnostics.result_action", action=t("diagnostics.result_blocked"))
+            state = "blocked"
         else:
-            action_name = result.action.value.replace("_", " ").upper()
-            self.result_title.setText(
-                f"نتیجه ارزیابی: {action_name}" if is_fa else f"Result: {action_name}"
-            )
-            self.result_title.setStyleSheet("color: #68D391; font-weight: 700;")
+            title = t("diagnostics.result_action", action=t(f"action.{result.action.value}"))
+            state = "routed" if result.matched_rule else ""
+        self._set_result_state(state, title, "\n\n".join(details))
 
-        explanation = result.explanation
-        if result.conflicts:
-            explanation += "\n\n" + "\n".join(result.conflicts)
-        self.result_desc.setText(explanation)
+    def _set_result_state(self, state: str, title: str, description: str) -> None:
+        self.result_title.setProperty("state", state)
+        ThemeManager.repolish(self.result_title)
+        self.result_title.setText(title)
+        self.result_desc.setText(description)
 
     def _on_export_clicked(self) -> None:
-        is_fa = self.i18n.current_language == "fa"
-        content = self.viewmodel.export_sanitized_bundle()
+        t = self.i18n.t
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            "ذخیره بسته گزارش تشخیصی سیستم" if is_fa else "Save Sanitized Diagnostic Bundle",
-            "routepilot_diagnostics.json",
-            "JSON Files (*.json)",
+            t("diagnostics.save_dialog_title"),
+            str(Path.home() / "routepilot-diagnostics.json"),
+            "JSON (*.json)",
         )
-        if file_path:
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(content)
+        if not file_path:
+            return
+        Path(file_path).write_text(self.viewmodel.export_sanitized_bundle(), encoding="utf-8")
+        self.export_status.setText(t("diagnostics.export_saved", path=file_path))

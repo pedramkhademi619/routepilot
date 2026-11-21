@@ -46,6 +46,16 @@ class NetworkConnection(BaseModel):
         )
 
     @property
+    def is_active(self) -> bool:
+        """True while the connection is fully activated."""
+        return self.state == ConnectionState.ACTIVATED
+
+    def gateway_for(self, family: int) -> str | None:
+        """Returns the default gateway for address family 4 or 6, if one is known."""
+        config = self.ip4_config if family == 4 else self.ip6_config
+        return config.gateway if config else None
+
+    @property
     def primary_ipv4(self) -> str | None:
         """Extracts the first IPv4 address without subnet mask."""
         if self.ip4_config and self.ip4_config.addresses:

@@ -1,184 +1,96 @@
-"""Settings View for application preferences, language selection, and emergency maintenance."""
+"""Settings View for language, appearance and emergency maintenance."""
 
-from PyQt6.QtWidgets import (
-    QComboBox,
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QMessageBox,
-    QPushButton,
-    QScrollArea,
-    QVBoxLayout,
-    QWidget,
-)
+from PyQt6.QtWidgets import QComboBox, QFormLayout, QLabel, QMessageBox, QPushButton, QWidget
 
-from routepilot.ui.translation_manager import TranslationManager
+from routepilot import __version__
+from routepilot.ui.style import ThemeManager
 from routepilot.ui.viewmodels.settings_viewmodel import SettingsViewModel
+from routepilot.ui.views.base_page import BasePage
+from routepilot.ui.widgets.card import Card
+from routepilot.ui.widgets.flow_layout import FlowLayout
+
+PROJECT_URL = "https://github.com/pedramkhademi619/routepilot"
 
 
-class SettingsView(QWidget):
-    """View managing application preferences, language, appearance, and emergency cleanup."""
+class SettingsView(BasePage):
+    """Application preferences, language, appearance, and emergency cleanup."""
 
     def __init__(self, viewmodel: SettingsViewModel) -> None:
         super().__init__()
         self.viewmodel = viewmodel
-        self.i18n = TranslationManager.instance()
 
-        self._setup_ui()
-        self.viewmodel.reset_completed.connect(self._on_reset_completed)
-        self.viewmodel.language_changed.connect(self._on_language_changed)
-        self.retranslate_ui()
-
-    def _setup_ui(self) -> None:
-        root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-
-        container = QWidget()
-        self.layout_container = QVBoxLayout(container)
-        self.layout_container.setContentsMargins(24, 24, 24, 24)
-        self.layout_container.setSpacing(20)
-
-        # Header
-        title_box = QVBoxLayout()
-        self.title = QLabel("Settings & Maintenance")
-        self.title.setObjectName("titleLabel")
-        self.subtitle = QLabel(
-            "Appearance preferences, language selection, and emergency system maintenance."
-        )
-        self.subtitle.setObjectName("subtitleLabel")
-        title_box.addWidget(self.title)
-        title_box.addWidget(self.subtitle)
-        self.layout_container.addLayout(title_box)
-
-        # Language Card
-        self.lang_card = QFrame()
-        self.lang_card.setObjectName("card")
-        lang_layout = QVBoxLayout(self.lang_card)
-        self.lang_title = QLabel("Interface Language")
-        self.lang_title.setObjectName("cardTitle")
-        lang_layout.addWidget(self.lang_title)
-
-        lang_row = QHBoxLayout()
-        self.lang_label = QLabel("Language:")
+        self.prefs_card = Card()
+        form = QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        form.setHorizontalSpacing(16)
+        self.lang_label = QLabel()
         self.lang_combo = QComboBox()
-        self.lang_combo.addItem("English", "en")
-        self.lang_combo.addItem("فارسی (Persian)", "fa")
-
-        # Select currently active language
-        idx = self.lang_combo.findData(self.viewmodel.current_language)
-        if idx >= 0:
-            self.lang_combo.setCurrentIndex(idx)
+        for code, native_name in viewmodel.languages.items():
+            self.lang_combo.addItem(native_name, code)
+        self._select(self.lang_combo, viewmodel.current_language)
         self.lang_combo.currentIndexChanged.connect(self._on_lang_combo_changed)
-
-        lang_row.addWidget(self.lang_label)
-        lang_row.addWidget(self.lang_combo)
-        lang_row.addStretch()
-        lang_layout.addLayout(lang_row)
-        self.layout_container.addWidget(self.lang_card)
-
-        # Theme Card
-        self.theme_card = QFrame()
-        self.theme_card.setObjectName("card")
-        theme_layout = QVBoxLayout(self.theme_card)
-        self.theme_title = QLabel("Appearance Theme")
-        self.theme_title.setObjectName("cardTitle")
-        theme_layout.addWidget(self.theme_title)
-
-        theme_row = QHBoxLayout()
-        self.theme_label = QLabel("Color Scheme:")
+        self.theme_label = QLabel()
         self.theme_combo = QComboBox()
-        self.theme_combo.addItem("Dark Theme", "dark")
-        self.theme_combo.addItem("Light Theme", "light")
+        for theme in ThemeManager.THEMES:
+            self.theme_combo.addItem(theme, theme)
+        self._select(self.theme_combo, viewmodel.current_theme)
         self.theme_combo.currentIndexChanged.connect(self._on_theme_changed)
+        form.addRow(self.lang_label, self.lang_combo)
+        form.addRow(self.theme_label, self.theme_combo)
+        self.prefs_card.body.addLayout(form)
+        self.content.addWidget(self.prefs_card)
 
-        theme_row.addWidget(self.theme_label)
-        theme_row.addWidget(self.theme_combo)
-        theme_row.addStretch()
-        theme_layout.addLayout(theme_row)
-        self.layout_container.addWidget(self.theme_card)
-
-        # Emergency Reset Card
-        self.reset_card = QFrame()
-        self.reset_card.setObjectName("card")
-        reset_layout = QVBoxLayout(self.reset_card)
-        self.reset_title = QLabel("Emergency State Purge")
-        self.reset_title.setObjectName("cardTitle")
-        self.reset_desc = QLabel(
-            "Purges all RoutePilot nftables tables, policy routing rules, and custom tables.\n"
-            "Use this if network connectivity feels stalled or after an unexpected service crash."
-        )
+        self.reset_card = Card()
+        self.reset_desc = QLabel()
+        self.reset_desc.setObjectName("mutedLabel")
         self.reset_desc.setWordWrap(True)
-        self.reset_desc.setStyleSheet("color: #A0AEC0;")
-
-        btn_row = QHBoxLayout()
-        self.reset_btn = QPushButton("Emergency Reset Kernel State")
+        self.reset_card.body.addWidget(self.reset_desc)
+        buttons_host = QWidget()
+        buttons = FlowLayout(buttons_host)
+        self.reset_btn = QPushButton()
         self.reset_btn.setObjectName("dangerButton")
         self.reset_btn.clicked.connect(self._on_emergency_reset_clicked)
-
-        self.clear_rules_btn = QPushButton("Clear All Rules")
+        self.clear_rules_btn = QPushButton()
         self.clear_rules_btn.setObjectName("secondaryButton")
         self.clear_rules_btn.clicked.connect(self._on_clear_rules_clicked)
+        buttons.addWidget(self.reset_btn)
+        buttons.addWidget(self.clear_rules_btn)
+        self.reset_card.body.addWidget(buttons_host)
+        self.content.addWidget(self.reset_card)
 
-        btn_row.addWidget(self.reset_btn)
-        btn_row.addWidget(self.clear_rules_btn)
-        btn_row.addStretch()
+        self.about_card = Card()
+        self.about_desc = QLabel()
+        self.about_desc.setObjectName("mutedLabel")
+        self.about_desc.setWordWrap(True)
+        self.about_link = QLabel()
+        self.about_link.setObjectName("link")
+        self.about_link.setOpenExternalLinks(True)
+        self.about_link.setWordWrap(True)
+        self.about_card.body.addWidget(self.about_desc)
+        self.about_card.body.addWidget(self.about_link)
+        self.content.addWidget(self.about_card)
+        self.content.addStretch()
 
-        reset_layout.addWidget(self.reset_title)
-        reset_layout.addWidget(self.reset_desc)
-        reset_layout.addLayout(btn_row)
-        self.layout_container.addWidget(self.reset_card)
-
-        # About & License Card
-        self.about_card = QFrame()
-        self.about_card.setObjectName("card")
-        about_layout = QVBoxLayout(self.about_card)
-        self.about_title = QLabel("About RoutePilot")
-        self.about_title.setObjectName("cardTitle")
-        self.about_desc = QLabel(
-            "RoutePilot v0.1.0\n"
-            "Open-source Linux Desktop Utility for Selective VPN Bypass and Traffic Routing.\n"
-            "Licensed under GNU General Public License v3.0 or later (GPL-3.0-or-later).\n"
-            "https://github.com/routepilot/routepilot"
-        )
-        self.about_desc.setStyleSheet("color: #A0AEC0; line-height: 1.4;")
-        about_layout.addWidget(self.about_title)
-        about_layout.addWidget(self.about_desc)
-        self.layout_container.addWidget(self.about_card)
-
-        self.layout_container.addStretch()
-
-        scroll.setWidget(container)
-        root_layout.addWidget(scroll)
+        self.viewmodel.language_changed.connect(self._on_language_changed)
 
     def retranslate_ui(self) -> None:
-        """Dynamically retranslates all labels and controls in SettingsView."""
-        t = self.i18n.tr
-        self.title.setText(t("settings.title"))
-        self.subtitle.setText(t("settings.subtitle"))
-
-        # Language card
-        self.lang_title.setText(t("settings.lang_card"))
+        t = self.i18n.t
+        self.header.set_text(t("settings.title"), t("settings.subtitle"))
+        self.prefs_card.set_title(t("settings.prefs_card"))
         self.lang_label.setText(t("settings.lang_label"))
-
-        # Theme card
-        self.theme_title.setText(t("settings.theme_card"))
         self.theme_label.setText(t("settings.theme_label"))
-        self.theme_combo.setItemText(0, t("settings.theme_dark"))
-        self.theme_combo.setItemText(1, t("settings.theme_light"))
-
-        # Purge card
-        self.reset_title.setText(t("settings.purge_card"))
-        self.reset_desc.setText(t("settings.purge_desc"))
+        for index in range(self.theme_combo.count()):
+            self.theme_combo.setItemText(
+                index, t(f"settings.theme_{self.theme_combo.itemData(index)}")
+            )
+        self.reset_card.set_title(t("settings.maintenance_card"))
+        self.reset_desc.setText(t("settings.maintenance_desc"))
         self.reset_btn.setText(t("settings.reset_btn"))
         self.clear_rules_btn.setText(t("settings.clear_btn"))
-
-        # About card
-        self.about_title.setText(t("settings.about_title"))
-        self.about_desc.setText(t("settings.about_desc"))
+        self.about_card.set_title(t("settings.about_title"))
+        self.about_desc.setText(t("settings.about_desc", version=__version__))
+        self.about_link.setText(f'<a href="{PROJECT_URL}">{t("settings.about_link")}</a>')
 
     def _on_lang_combo_changed(self) -> None:
         lang_code = self.lang_combo.currentData()
@@ -186,41 +98,34 @@ class SettingsView(QWidget):
             self.viewmodel.set_language(lang_code)
 
     def _on_language_changed(self, lang_code: str) -> None:
-        # Update combo index if needed without triggering recursion
         self.lang_combo.blockSignals(True)
-        idx = self.lang_combo.findData(lang_code)
-        if idx >= 0:
-            self.lang_combo.setCurrentIndex(idx)
+        self._select(self.lang_combo, lang_code)
         self.lang_combo.blockSignals(False)
-        self.retranslate_ui()
 
     def _on_theme_changed(self) -> None:
-        theme = self.theme_combo.currentData()
-        self.viewmodel.set_theme(theme)
+        self.viewmodel.set_theme(self.theme_combo.currentData())
+
+    def _confirm(self, title_key: str, body_key: str) -> bool:
+        t = self.i18n.t
+        answer = QMessageBox.question(
+            self,
+            t(title_key),
+            t(body_key),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
 
     def _on_emergency_reset_clicked(self) -> None:
-        confirm = QMessageBox.question(
-            self,
-            "Confirm Emergency Reset" if self.i18n.current_language == "en" else "تأیید بازنشانی اضطراری",
-            "Are you sure you want to purge all RoutePilot kernel state and tables?"
-            if self.i18n.current_language == "en"
-            else "آیا مطمئن هستید که می‌خواهید تمام جداول و وضعیت هسته RoutePilot پاک شود؟",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if confirm == QMessageBox.StandardButton.Yes:
+        if self._confirm("settings.confirm_reset_title", "settings.confirm_reset_body"):
             self.viewmodel.trigger_emergency_reset()
 
     def _on_clear_rules_clicked(self) -> None:
-        confirm = QMessageBox.question(
-            self,
-            "Confirm Clear Rules" if self.i18n.current_language == "en" else "تأیید حذف قوانین",
-            "Are you sure you want to delete all configured routing rules?"
-            if self.i18n.current_language == "en"
-            else "آیا مطمئن هستید که می‌خواهید تمام قوانین حذف شوند؟",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if confirm == QMessageBox.StandardButton.Yes:
+        if self._confirm("settings.confirm_clear_title", "settings.confirm_clear_body"):
             self.viewmodel.clear_all_rules()
 
-    def _on_reset_completed(self, message: str) -> None:
-        QMessageBox.information(self, "RoutePilot", message)
+    @staticmethod
+    def _select(combo: QComboBox, value: str) -> None:
+        index = combo.findData(value)
+        if index >= 0:
+            combo.setCurrentIndex(index)

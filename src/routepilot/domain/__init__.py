@@ -10,6 +10,9 @@ from routepilot.domain.models.connection_state import ConnectionState
 from routepilot.domain.models.ip_config import IPConfig
 from routepilot.domain.models.network_connection import NetworkConnection
 from routepilot.domain.models.route_entry import RouteEntry
+from routepilot.domain.models.route_type import RouteType
+from routepilot.domain.models.routepilot_plan import RoutePilotPlan
+from routepilot.domain.models.rpdb_rule import RpdbRule
 from routepilot.domain.policy.action_type import ActionType
 from routepilot.domain.policy.activation_condition import ActivationCondition
 from routepilot.domain.policy.condition_type import ConditionType
@@ -35,8 +38,11 @@ __all__ = [
     "PolicyDocument",
     "RollbackError",
     "RouteEntry",
+    "RoutePilotPlan",
+    "RouteType",
     "RoutePilotError",
     "RoutingRule",
+    "RpdbRule",
     "RuleConflictError",
     "SelectorType",
     "TargetUnavailableError",

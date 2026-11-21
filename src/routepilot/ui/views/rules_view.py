@@ -1,275 +1,279 @@
 """Rules View for searching, inspecting, and managing traffic policy rules."""
 
-import subprocess
 from collections.abc import Callable
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QEvent, QObject, QSize, Qt, QTimer
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QCheckBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from routepilot.domain.policy.action_type import ActionType
-from routepilot.domain.policy.condition_type import ConditionType
 from routepilot.domain.policy.routing_rule import RoutingRule
-from routepilot.ui.translation_manager import TranslationManager
+from routepilot.domain.policy.selector_type import SelectorType
+from routepilot.ui.icons import Icons
 from routepilot.ui.viewmodels.rules_viewmodel import RulesViewModel
+from routepilot.ui.views.base_page import BasePage
 
 
-class RulesView(QWidget):
-    """View presenting the interactive table of policy routing rules."""
+class RulesView(BasePage):
+    """Interactive table of policy routing rules."""
+
+    COL_ENABLED, COL_NAME, COL_TARGET, COL_ACTION, COL_CONDITION, COL_PRIORITY, COL_CONTROLS = (
+        range(7)
+    )
+    # Columns hidden when the table is narrower than the given width (least important first).
+    HIDE_BELOW = {COL_CONDITION: 780, COL_PRIORITY: 640, COL_ACTION: 520}
 
     def __init__(
-        self, viewmodel: RulesViewModel, on_edit_rule: Callable[[RoutingRule | None], None]
+        self,
+        viewmodel: RulesViewModel,
+        on_edit_rule: Callable[[RoutingRule | None], None],
+        on_apply: Callable[[], None],
     ) -> None:
-        super().__init__()
+        super().__init__(scrollable=False)
         self.viewmodel = viewmodel
         self.on_edit_rule = on_edit_rule
-        self.i18n = TranslationManager.instance()
+        self._icon_colors = {"muted": "#9AA3B2", "danger_fg": "#FCA5A5", "on_primary": "#FFFFFF"}
 
-        self._setup_ui()
-        self.viewmodel.rules_updated.connect(self._render_table)
-        self.retranslate_ui()
-
-    def _setup_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
-
-        # Header with Add button
-        header_row = QHBoxLayout()
-        title_box = QVBoxLayout()
-        self.title = QLabel("Traffic Rules")
-        self.title.setObjectName("titleLabel")
-        self.subtitle = QLabel(
-            "Define which domains, IP ranges, or applications bypass VPN or use specific connections."
-        )
-        self.subtitle.setObjectName("subtitleLabel")
-        title_box.addWidget(self.title)
-        title_box.addWidget(self.subtitle)
-        header_row.addLayout(title_box)
-
-        header_row.addStretch()
-
-        self.apply_btn = QPushButton("⚡ Apply to Kernel")
-        self.apply_btn.setObjectName("primaryButton")
-        self.apply_btn.setStyleSheet("background-color: #276749; color: #FFFFFF; font-weight: 600;")
-        self.apply_btn.clicked.connect(self._on_apply_clicked)
-        header_row.addWidget(self.apply_btn)
-
-        self.add_btn = QPushButton("+ Create Rule")
+        self.apply_btn = QPushButton()
+        self.apply_btn.setObjectName("secondaryButton")
+        self.apply_btn.clicked.connect(on_apply)
+        self.add_btn = QPushButton()
         self.add_btn.setObjectName("primaryButton")
         self.add_btn.clicked.connect(lambda: self.on_edit_rule(None))
-        header_row.addWidget(self.add_btn)
+        for btn in (self.apply_btn, self.add_btn):
+            btn.setIconSize(QSize(16, 16))
+            self.header.add_action(btn)
 
-        layout.addLayout(header_row)
-
-        # Search bar
-        search_box = QHBoxLayout()
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Filter rules by name, domain, or IP...")
+        self.search_input.setClearButtonEnabled(True)
         self.search_input.textChanged.connect(self.viewmodel.set_filter)
-        search_box.addWidget(self.search_input)
-        layout.addLayout(search_box)
+        self.content.addWidget(self.search_input)
 
-        # Table
-        self.table = QTableWidget()
-        self.table.setColumnCount(7)
-        self.table.setHorizontalHeaderLabels(
-            ["State", "Prio", "Rule Name", "Target Selector", "Action", "Condition", "Controls"]
-        )
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setAlternatingRowColors(True)
-        v_header = self.table.verticalHeader()
+        self.stack = QStackedWidget()
+        self.table = self._build_table()
+        self.table.installEventFilter(self)
+        self.stack.addWidget(self.table)
+        self.empty_state = QWidget()
+        empty_layout = QVBoxLayout(self.empty_state)
+        empty_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_title = QLabel()
+        self.empty_title.setObjectName("emptyTitle")
+        self.empty_body = QLabel()
+        self.empty_body.setObjectName("mutedLabel")
+        for label in (self.empty_title, self.empty_body):
+            label.setWordWrap(True)
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            empty_layout.addWidget(label)
+        self.stack.addWidget(self.empty_state)
+        self.content.addWidget(self.stack, 1)
+
+        self.viewmodel.rules_updated.connect(self._render_table)
+
+    def _build_table(self) -> QTableWidget:
+        table = QTableWidget(0, 7)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setAlternatingRowColors(True)
+        table.setShowGrid(False)
+        table.setWordWrap(False)
+        table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        table.cellDoubleClicked.connect(self._on_row_double_clicked)
+        v_header = table.verticalHeader()
         if v_header is not None:
             v_header.setVisible(False)
             v_header.setDefaultSectionSize(44)
-        self.table.setHorizontalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
-        self.table.setVerticalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
-
-        header = self.table.horizontalHeader()
+        header = table.horizontalHeader()
         if header is not None:
             header.setStretchLastSection(False)
-
-            # 0: State (Fixed width badge)
-            header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-            self.table.setColumnWidth(0, 95)
-
-            # 1: Prio (Fixed width)
-            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-            self.table.setColumnWidth(1, 55)
-
-            # 2: Rule Name (Interactive with 170px default)
-            header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
-            self.table.setColumnWidth(2, 170)
-
-            # 3: Target Selector (STRETCH to take all remaining flexible width)
-            header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-
-            # 4: Action (Interactive with 120px default)
-            header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
-            self.table.setColumnWidth(4, 120)
-
-            # 5: Condition (Interactive with 130px default)
-            header.setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)
-            self.table.setColumnWidth(5, 130)
-
-            # 6: Controls (Fixed width for action buttons, never stretches)
-            header.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
-            self.table.setColumnWidth(6, 220)
-
-        layout.addWidget(self.table)
+            header.setHighlightSections(False)
+            header.setDefaultAlignment(
+                Qt.AlignmentFlag.AlignLeading | Qt.AlignmentFlag.AlignVCenter
+            )
+            fixed = QHeaderView.ResizeMode.Fixed
+            content = QHeaderView.ResizeMode.ResizeToContents
+            stretch = QHeaderView.ResizeMode.Stretch
+            modes = {
+                self.COL_ENABLED: fixed,
+                self.COL_NAME: stretch,
+                self.COL_TARGET: stretch,
+                self.COL_ACTION: content,
+                self.COL_CONDITION: content,
+                self.COL_PRIORITY: content,
+                self.COL_CONTROLS: fixed,
+            }
+            for column, mode in modes.items():
+                header.setSectionResizeMode(column, mode)
+            table.setColumnWidth(self.COL_ENABLED, 56)
+            table.setColumnWidth(self.COL_CONTROLS, 84)
+        return table
 
     def retranslate_ui(self) -> None:
-        """Dynamically retranslates headers, placeholders, and table items."""
         t = self.i18n.t
-        self.title.setText(t("rules.title"))
-        self.subtitle.setText(t("rules.subtitle"))
-        self.apply_btn.setText(t("common.apply"))
+        self.header.set_text(t("rules.title"), t("rules.subtitle"))
         self.add_btn.setText(t("common.create_rule"))
-        self.search_input.setPlaceholderText(t("common.filter_placeholder"))
-
-        self.table.setHorizontalHeaderLabels([
-            t("rules.col_state"),
-            t("rules.col_prio"),
-            t("rules.col_name"),
-            t("rules.col_target"),
-            t("rules.col_action"),
-            t("rules.col_condition"),
-            t("rules.col_controls"),
-        ])
+        self.search_input.setPlaceholderText(t("rules.filter_placeholder"))
+        self.set_applying(not self.apply_btn.isEnabled())
+        self.table.setHorizontalHeaderLabels(
+            [
+                t("rules.col_enabled"),
+                t("rules.col_name"),
+                t("rules.col_target"),
+                t("rules.col_action"),
+                t("rules.col_condition"),
+                t("rules.col_priority"),
+                t("rules.col_actions"),
+            ]
+        )
         self._render_table()
+
+    def refresh_icons(self, palette: dict[str, str]) -> None:
+        self._icon_colors = palette
+        self.add_btn.setIcon(Icons.get("plus", palette["on_primary"]))
+        self.apply_btn.setIcon(Icons.get("apply", palette["muted"]))
+        self._render_table()
+
+    def set_applying(self, busy: bool) -> None:
+        self.apply_btn.setEnabled(not busy)
+        self.apply_btn.setText(self.i18n.t("common.applying" if busy else "common.apply"))
+
+    def eventFilter(self, watched: QObject | None, event: QEvent | None) -> bool:  # noqa: N802
+        if watched is self.table and event is not None and event.type() == QEvent.Type.Resize:
+            self._update_visible_columns()
+        return super().eventFilter(watched, event)
+
+    def _update_visible_columns(self) -> None:
+        width = self.table.width()
+        for column, min_width in self.HIDE_BELOW.items():
+            self.table.setColumnHidden(column, width < min_width)
 
     def _render_table(self) -> None:
         t = self.i18n.t
-        is_fa = self.i18n.current_language == "fa"
         rules = self.viewmodel.get_rules()
-        self.table.setRowCount(len(rules))
-
-        for row, rule in enumerate(rules):
-            # 1. State / Toggle Badge
-            badge_widget = QWidget()
-            badge_layout = QHBoxLayout(badge_widget)
-            badge_layout.setContentsMargins(6, 4, 6, 4)
-            badge_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            state_text = (
-                ("🟢 فعال" if rule.enabled else "⚪ غیرفعال")
-                if is_fa
-                else ("🟢 Active" if rule.enabled else "⚪ Disabled")
+        if not rules:
+            query = self.viewmodel.filter_query
+            self.empty_title.setText(
+                t("rules.no_match", query=query) if query else t("rules.empty_title")
             )
-            badge = QLabel(state_text)
-            badge.setObjectName("badgeDirect" if rule.enabled else "badgeOffline")
-            badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            badge_layout.addWidget(badge)
-            self.table.setCellWidget(row, 0, badge_widget)
+            self.empty_body.setVisible(not query)
+            self.empty_body.setText(t("rules.empty_body"))
+            self.stack.setCurrentWidget(self.empty_state)
+            return
 
-            # 2. Priority
-            prio_item = QTableWidgetItem(str(rule.priority))
-            prio_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 1, prio_item)
-
-            # 3. Name
-            name_item = QTableWidgetItem(rule.name)
-            name_item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-            self.table.setItem(row, 2, name_item)
-
-            # 4. Target Selector
-            sel_text = f"{rule.selector.type.value}: {rule.selector.value}"
-            sel_item = QTableWidgetItem(sel_text)
-            sel_item.setToolTip(sel_text)
-            sel_item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-            self.table.setItem(row, 3, sel_item)
-
-            # 5. Action
-            action_text = self._format_action(rule.action.type, is_fa)
-            action_item = QTableWidgetItem(action_text)
-            action_item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-            self.table.setItem(row, 4, action_item)
-
-            # 6. Condition
-            cond_text = self._format_condition(rule.condition.type, is_fa)
-            cond_item = QTableWidgetItem(cond_text)
-            cond_item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-            self.table.setItem(row, 5, cond_item)
-
-            # 7. Action Controls widget
-            btn_widget = QWidget()
-            btn_layout = QHBoxLayout(btn_widget)
-            btn_layout.setContentsMargins(4, 2, 4, 2)
-            btn_layout.setSpacing(6)
-            btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-            if rule.enabled:
-                toggle_label = "⏸ غیرفعال‌سازی" if is_fa else "⏸ Disable"
-                toggle_tip = "کلیک کنید تا این قانون غیرفعال شود" if is_fa else "Click to disable this rule"
-                toggle_btn_obj = "secondaryButton"
-            else:
-                toggle_label = "▶ فعال‌سازی" if is_fa else "▶ Enable"
-                toggle_tip = "کلیک کنید تا این قانون فعال شود" if is_fa else "Click to enable this rule"
-                toggle_btn_obj = "primaryButton"
-
-            toggle_btn = QPushButton(toggle_label)
-            toggle_btn.setToolTip(toggle_tip)
-            toggle_btn.setObjectName(toggle_btn_obj)
-            toggle_btn.setFixedWidth(82 if is_fa else 74)
-            toggle_btn.setFixedHeight(28)
-            toggle_btn.clicked.connect(lambda _, r_id=rule.id: self._on_toggle_rule(r_id))
-            btn_layout.addWidget(toggle_btn)
-
-            edit_btn = QPushButton(t("common.edit"))
-            edit_btn.setObjectName("secondaryButton")
-            edit_btn.setFixedWidth(54)
-            edit_btn.setFixedHeight(28)
-            edit_btn.clicked.connect(lambda _, r=rule: self.on_edit_rule(r))
-            btn_layout.addWidget(edit_btn)
-
-            del_btn = QPushButton(t("common.delete"))
-            del_btn.setObjectName("dangerButton")
-            del_btn.setFixedWidth(56)
-            del_btn.setFixedHeight(28)
-            del_btn.clicked.connect(lambda _, r_id=rule.id: self._on_delete_rule(r_id))
-            btn_layout.addWidget(del_btn)
-
-            self.table.setCellWidget(row, 6, btn_widget)
-
-    def _on_toggle_rule(self, rule_id: str) -> None:
-        """Toggles rule and immediately updates kernel routing state."""
-        self.viewmodel.toggle_rule(rule_id)
-        self._on_apply_clicked()
-
-    def _on_delete_rule(self, rule_id: str) -> None:
-        """Deletes rule and immediately updates kernel routing state."""
-        self.viewmodel.delete_rule(rule_id)
-        self._on_apply_clicked()
-
-    def _format_action(self, action_type: ActionType, is_fa: bool) -> str:
-        if is_fa:
-            mapping = {
-                ActionType.USE_DIRECT: "عبور مستقیم",
-                ActionType.USE_SELECTED_VPN: "فقط وی‌پی‌ان",
-                ActionType.BLOCK: "مسدودسازی",
-                ActionType.FOLLOW_SYSTEM: "پیش‌فرض سیستم",
+        self.stack.setCurrentWidget(self.table)
+        self.table.setRowCount(0)  # releases (hides and deletes) the previous row widgets
+        self.table.setRowCount(len(rules))
+        for row, rule in enumerate(rules):
+            self.table.setCellWidget(row, self.COL_ENABLED, self._toggle_cell(rule))
+            target = self._display_target(rule)
+            values = {
+                self.COL_NAME: rule.name,
+                self.COL_TARGET: self.i18n.ltr(target),
+                self.COL_ACTION: t(f"action.{rule.action.type.value}"),
+                self.COL_CONDITION: t(f"condition.{rule.condition.type.value}"),
+                self.COL_PRIORITY: str(rule.priority),
             }
-            return mapping.get(action_type, action_type.value)
-        return action_type.value.replace("_", " ").title()
+            for column, text in values.items():
+                item = QTableWidgetItem(text)
+                item.setToolTip(
+                    f"{rule.name}\n{t(f'selector.{rule.selector.type.value}')}: {target}"
+                )
+                alignment = (
+                    Qt.AlignmentFlag.AlignCenter
+                    if column == self.COL_PRIORITY
+                    else Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeading
+                )
+                item.setTextAlignment(alignment)
+                if not rule.enabled:
+                    item.setForeground(self.table.palette().placeholderText())
+                self.table.setItem(row, column, item)
+            self.table.setCellWidget(row, self.COL_CONTROLS, self._controls_cell(rule))
+        self._update_visible_columns()
 
-    def _format_condition(self, cond_type: ConditionType, is_fa: bool) -> str:
-        if is_fa:
-            mapping = {
-                ConditionType.ALWAYS: "همیشه فعال",
-                ConditionType.ANY_VPN_ACTIVE: "هنگام اتصال VPN",
-                ConditionType.SPECIFIC_VPN_ACTIVE: "اتصال VPN خاص",
-            }
-            return mapping.get(cond_type, cond_type.value)
-        return cond_type.value.replace("_", " ").title()
+    def _toggle_cell(self, rule: RoutingRule) -> QWidget:
+        cell = QWidget()
+        layout = QHBoxLayout(cell)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        box = QCheckBox()
+        box.setChecked(rule.enabled)
+        box.setToolTip(self.i18n.t("rules.toggle_tip"))
+        box.setAccessibleName(f"{self.i18n.t('rules.toggle_tip')}: {rule.name}")
+        box.toggled.connect(
+            lambda _checked, r_id=rule.id: self._defer(self.viewmodel.toggle_rule, r_id)
+        )
+        layout.addWidget(box)
+        return cell
 
-    def _on_apply_clicked(self) -> None:
-        """Invokes the routepilot-apply privileged helper via pkexec."""
-        subprocess.Popen(["/home/pedram/.local/bin/routepilot-apply"])
+    def _controls_cell(self, rule: RoutingRule) -> QWidget:
+        cell = QWidget()
+        layout = QHBoxLayout(cell)
+        layout.setContentsMargins(4, 0, 4, 0)
+        layout.setSpacing(2)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        for icon, color_key, tip_key, handler in (
+            (
+                "edit",
+                "muted",
+                "common.edit",
+                lambda _=False, r=rule: self._defer(self.on_edit_rule, r),
+            ),
+            (
+                "delete",
+                "danger_fg",
+                "common.delete",
+                lambda _=False, r=rule: self._defer(self._confirm_delete, r),
+            ),
+        ):
+            btn = QToolButton()
+            btn.setObjectName("iconButton")
+            btn.setIcon(Icons.get(icon, self._icon_colors.get(color_key, "#9AA3B2")))
+            btn.setIconSize(QSize(18, 18))
+            btn.setToolTip(self.i18n.t(tip_key))
+            btn.setAccessibleName(f"{self.i18n.t(tip_key)}: {rule.name}")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(handler)
+            layout.addWidget(btn)
+        return cell
+
+    @staticmethod
+    def _defer(handler: Callable[..., None], *args: object) -> None:
+        """Runs ``handler`` after the current event: re-rendering deletes the clicked widget."""
+        QTimer.singleShot(0, lambda: handler(*args))
+
+    def _confirm_delete(self, rule: RoutingRule) -> None:
+        t = self.i18n.t
+        answer = QMessageBox.question(
+            self,
+            t("rules.confirm_delete_title"),
+            t("rules.confirm_delete_body", name=rule.name),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.viewmodel.delete_rule(rule.id)
+
+    def _on_row_double_clicked(self, row: int, _column: int) -> None:
+        rules = self.viewmodel.get_rules()
+        if 0 <= row < len(rules):
+            self.on_edit_rule(rules[row])
+
+    @staticmethod
+    def _display_target(rule: RoutingRule) -> str:
+        if rule.selector.type == SelectorType.DOMAIN_AND_SUBDOMAINS:
+            return f"*.{rule.selector.root_domain}"
+        return rule.selector.value

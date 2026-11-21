@@ -14,3 +14,6 @@ class IPConfig(BaseModel):
         default_factory=list, description="List of configured DNS servers"
     )
     domains: list[str] = Field(default_factory=list, description="Search domains")
+    default_route_metric: int | None = Field(
+        default=None, description="Metric of this link's default route, if it has one"
+    )

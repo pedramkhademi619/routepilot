@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class NftablesFirewallAdapter(FirewallPort):
-    """Adapter managing the isolated 'table inet routepilot' using /usr/sbin/nft."""
+    """Adapter managing the isolated 'table inet routepilot' using the nft binary."""
 
     TABLE_NAME = "routepilot"
     FAMILY = "inet"
@@ -19,75 +19,35 @@ class NftablesFirewallAdapter(FirewallPort):
         self.nft_path = shutil.which("nft") or nft_path
 
     def apply_ruleset(self, ruleset_content: str) -> None:
-        """Applies a complete ruleset atomically via standard input to nft -f -."""
-        logger.info("Applying atomic nftables ruleset (%d bytes)...", len(ruleset_content))
-        proc = subprocess.run(
-            [self.nft_path, "-f", "-"],
-            input=ruleset_content,
-            text=True,
-            capture_output=True,
-            check=False,
+        """Replaces the table in one nft transaction: either all of it applies or nothing."""
+        # Declaring then deleting the table first makes the load idempotent instead of
+        # appending duplicate rules on every apply.
+        script = (
+            f"table {self.FAMILY} {self.TABLE_NAME}\n"
+            f"delete table {self.FAMILY} {self.TABLE_NAME}\n" + ruleset_content
         )
+        logger.info("Applying atomic nftables ruleset (%d bytes)...", len(script))
+        proc = self._run("-f", "-", stdin=script)
         if proc.returncode != 0:
-            logger.error("nft -f - failed: %s", proc.stderr.strip())
             raise RuntimeError(f"nftables application failed: {proc.stderr.strip()}")
-        logger.info("nftables ruleset applied successfully.")
 
     def flush_routepilot_table(self) -> None:
-        """Purges table inet routepilot."""
-        logger.info("Deleting table inet %s...", self.TABLE_NAME)
-        proc = subprocess.run(
-            [self.nft_path, "delete", "table", self.FAMILY, self.TABLE_NAME],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        # returncode 1 is expected if table does not exist
-        if proc.returncode == 0:
-            logger.info("Deleted table inet %s.", self.TABLE_NAME)
-
-    def add_set_elements(self, set_name: str, elements: list[str]) -> None:
-        """Adds elements to a named set."""
-        if not elements:
+        if not self.is_table_present():
             return
-        elems_str = ", ".join(elements)
-        cmd = [
-            self.nft_path,
-            "add",
-            "element",
-            self.FAMILY,
-            self.TABLE_NAME,
-            set_name,
-            f"{{ {elems_str} }}",
-        ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        proc = self._run("delete", "table", self.FAMILY, self.TABLE_NAME)
         if proc.returncode != 0:
-            logger.warning("Failed to add elements to %s: %s", set_name, proc.stderr.strip())
-
-    def remove_set_elements(self, set_name: str, elements: list[str]) -> None:
-        """Removes elements from a named set."""
-        if not elements:
-            return
-        elems_str = ", ".join(elements)
-        cmd = [
-            self.nft_path,
-            "delete",
-            "element",
-            self.FAMILY,
-            self.TABLE_NAME,
-            set_name,
-            f"{{ {elems_str} }}",
-        ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        if proc.returncode != 0:
-            logger.warning("Failed to remove elements from %s: %s", set_name, proc.stderr.strip())
+            raise RuntimeError(f"Could not delete nftables table: {proc.stderr.strip()}")
+        logger.info("Deleted table %s %s.", self.FAMILY, self.TABLE_NAME)
 
     def is_table_present(self) -> bool:
-        """Checks if table inet routepilot exists."""
-        proc = subprocess.run(
-            [self.nft_path, "list", "table", self.FAMILY, self.TABLE_NAME],
-            capture_output=True,
+        return self._run("list", "table", self.FAMILY, self.TABLE_NAME).returncode == 0
+
+    def _run(self, *args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [self.nft_path, *args],
+            input=stdin,
             text=True,
+            capture_output=True,
             check=False,
+            timeout=30,
         )
-        return proc.returncode == 0

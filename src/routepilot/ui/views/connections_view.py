@@ -1,158 +1,113 @@
+"""Connections view: one card per discovered network link or VPN."""
+
 from collections.abc import Callable
 
-from PyQt6.QtWidgets import (
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QScrollArea,
-    QVBoxLayout,
-    QWidget,
-)
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QFormLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
-from routepilot.ui.translation_manager import TranslationManager
+from routepilot.domain.models.connection_kind import ConnectionKind
+from routepilot.domain.models.network_connection import NetworkConnection
 from routepilot.ui.viewmodels.connections_viewmodel import ConnectionsViewModel
+from routepilot.ui.views.base_page import BasePage
+from routepilot.ui.widgets.card import Card
 
 
-class ConnectionsView(QWidget):
-    """View rendering detailed cards for all discovered network and VPN connections."""
+class ConnectionsView(BasePage):
+    """Renders cards for all discovered network and VPN connections."""
 
     def __init__(self, viewmodel: ConnectionsViewModel, on_refresh: Callable[[], None]) -> None:
         super().__init__()
         self.viewmodel = viewmodel
-        self.on_refresh = on_refresh
-        self.i18n = TranslationManager.instance()
 
-        self._setup_ui()
-        self.viewmodel.connections_updated.connect(self._render_connections)
-        self.retranslate_ui()
-
-    def _setup_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
-
-        # Header
-        header_row = QHBoxLayout()
-        title_box = QVBoxLayout()
-        self.title = QLabel("Network & VPN Connections")
-        self.title.setObjectName("titleLabel")
-        self.subtitle = QLabel(
-            "Discovered Linux interfaces, NetworkManager active connections, and routing metrics."
-        )
-        self.subtitle.setObjectName("subtitleLabel")
-        title_box.addWidget(self.title)
-        title_box.addWidget(self.subtitle)
-        header_row.addLayout(title_box)
-
-        header_row.addStretch()
-
-        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn = QPushButton()
         self.refresh_btn.setObjectName("secondaryButton")
-        self.refresh_btn.clicked.connect(self.on_refresh)
-        header_row.addWidget(self.refresh_btn)
+        self.refresh_btn.clicked.connect(on_refresh)
+        self.header.add_action(self.refresh_btn)
 
-        layout.addLayout(header_row)
-
-        # Scroll area for connection cards
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-
-        self.cards_container = QWidget()
-        self.cards_layout = QVBoxLayout(self.cards_container)
+        self.cards_host = QWidget()
+        self.cards_layout = QVBoxLayout(self.cards_host)
         self.cards_layout.setContentsMargins(0, 0, 0, 0)
         self.cards_layout.setSpacing(12)
+        self.content.addWidget(self.cards_host)
+        self.content.addStretch()
 
-        self.scroll_area.setWidget(self.cards_container)
-        layout.addWidget(self.scroll_area)
+        self.viewmodel.connections_updated.connect(self._render_connections)
 
     def retranslate_ui(self) -> None:
-        """Dynamically retranslates texts in ConnectionsView."""
         t = self.i18n.t
-        self.title.setText(t("connections.title"))
-        self.subtitle.setText(t("connections.subtitle"))
+        self.header.set_text(t("connections.title"), t("connections.subtitle"))
         self.refresh_btn.setText(t("common.refresh"))
         self._render_connections()
 
-    def _render_connections(self) -> None:
-        t = self.i18n.t
-        is_fa = self.i18n.current_language == "fa"
+    def set_refreshing(self, running: bool) -> None:
+        self.refresh_btn.setEnabled(not running)
 
-        # Clear existing cards
+    def _render_connections(self) -> None:
         while self.cards_layout.count():
             item = self.cards_layout.takeAt(0)
-            if item is not None:
-                w = item.widget()
-                if w is not None:
-                    w.deleteLater()
+            widget = item.widget() if item else None
+            if widget is not None:
+                widget.deleteLater()
 
         conns = self.viewmodel.connections
         if not conns:
-            empty_lbl = QLabel(t("connections.empty"))
-            empty_lbl.setStyleSheet("color: #A0AEC0; padding: 24px;")
-            self.cards_layout.addWidget(empty_lbl)
+            empty = QLabel(self.i18n.t("connections.empty"))
+            empty.setObjectName("mutedLabel")
+            empty.setWordWrap(True)
+            self.cards_layout.addWidget(empty)
             return
+        for conn in sorted(conns, key=lambda c: (not c.is_vpn, not c.is_eligible_direct, c.id)):
+            self.cards_layout.addWidget(self._card(conn))
 
-        for conn in conns:
-            card = QFrame()
-            card.setObjectName("card")
-            card_layout = QVBoxLayout(card)
+    def _card(self, conn: NetworkConnection) -> Card:
+        t = self.i18n.t
+        card = Card()
+        top = QHBoxLayout()
+        name = QLabel(conn.id)
+        name.setObjectName("cardTitle")
+        name.setWordWrap(True)
+        top.addWidget(name, 1)
+        kind = t(f"kind.{conn.kind.value}")
+        if conn.is_vpn and conn.kind == ConnectionKind.VPN_GENERIC:
+            badge = QLabel(kind)
+            badge.setObjectName("badgeVpn")
+        elif conn.is_vpn:
+            badge = QLabel(t("connections.badge_vpn", kind=kind))
+            badge.setObjectName("badgeVpn")
+        elif conn.is_eligible_direct:
+            badge = QLabel(t("connections.badge_direct"))
+            badge.setObjectName("badgeDirect")
+        else:
+            badge = QLabel(kind)
+            badge.setObjectName("badgeOffline")
+        top.addWidget(badge, 0, Qt.AlignmentFlag.AlignTop)
+        card.body.addLayout(top)
 
-            top_row = QHBoxLayout()
-            name_lbl = QLabel(conn.id)
-            name_lbl.setObjectName("cardTitle")
-            top_row.addWidget(name_lbl)
-
-            top_row.addStretch()
-
-            if conn.is_vpn:
-                badge_text = (
-                    f"وی‌پی‌ان ({conn.kind.value.upper()})"
-                    if is_fa
-                    else f"VPN ({conn.kind.value.upper()})"
-                )
-                badge = QLabel(badge_text)
-                badge.setObjectName("badgeVpn")
-            elif conn.is_eligible_direct:
-                badge_text = "خروجی مستقیم (فیزیکی)" if is_fa else "Direct Egress (Physical)"
-                badge = QLabel(badge_text)
-                badge.setObjectName("badgeDirect")
-            else:
-                badge = QLabel(conn.kind.value.capitalize())
-                badge.setObjectName("badgeOffline")
-            top_row.addWidget(badge)
-
-            card_layout.addLayout(top_row)
-
-            # Details
-            ip_str = (
-                ", ".join(conn.ip4_config.addresses)
-                if conn.ip4_config and conn.ip4_config.addresses
-                else ("بدون IPv4" if is_fa else "No IPv4")
-            )
-            gw_str = (
-                conn.ip4_config.gateway
-                if conn.ip4_config and conn.ip4_config.gateway
-                else ("هیچ" if is_fa else "None")
-            )
-            if is_fa:
-                default_str = "بله (گیت‌وی پیش‌فرض)" if conn.is_default else "خیر"
-                details = QLabel(
-                    f"رابط شبکه: <b>{conn.interface}</b> | اولویت (متریک): <b>{conn.metric}</b> | مسیر پیش‌فرض: <b>{default_str}</b>\n"
-                    f"آدرس‌های IP: {ip_str} | گیت‌وی: {gw_str}\n"
-                    f"شناسه UUID: <font color='#718096'>{conn.uuid}</font>"
-                )
-            else:
-                default_str = "Yes (Default Gateway)" if conn.is_default else "No"
-                details = QLabel(
-                    f"Interface: <b>{conn.interface}</b> | Metric: <b>{conn.metric}</b> | Default Route: <b>{default_str}</b>\n"
-                    f"IPs: {ip_str} | Gateway: {gw_str}\n"
-                    f"UUID: <font color='#718096'>{conn.uuid}</font>"
-                )
-            details.setTextFormat(details.textFormat().RichText)
-            card_layout.addWidget(details)
-
-            self.cards_layout.addWidget(card)
-
-        self.cards_layout.addStretch()
+        form = QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        form.setHorizontalSpacing(16)
+        form.setVerticalSpacing(6)
+        addresses = [*(conn.ip4_config.addresses if conn.ip4_config else [])]
+        addresses += conn.ip6_config.addresses if conn.ip6_config else []
+        gateways = [g for g in (conn.gateway_for(4), conn.gateway_for(6)) if g]
+        rows = (
+            ("connections.field_interface", conn.interface),
+            ("connections.field_addresses", ", ".join(addresses) or t("common.none")),
+            ("connections.field_gateway", ", ".join(gateways) or t("common.none")),
+            ("connections.field_metric", str(conn.metric)),
+            (
+                "connections.field_default",
+                t("connections.default_yes" if conn.is_default else "connections.default_no"),
+            ),
+            ("connections.field_uuid", conn.uuid),
+        )
+        for key, value in rows:
+            label = QLabel(t(key))
+            label.setObjectName("fieldLabel")
+            field = QLabel(value)
+            field.setWordWrap(True)
+            field.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            form.addRow(label, field)
+        card.body.addLayout(form)
+        return card

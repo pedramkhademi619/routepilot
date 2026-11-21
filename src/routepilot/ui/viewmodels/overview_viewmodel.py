@@ -4,7 +4,6 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 from routepilot.application.services.discovery_service import DiscoveryService
 from routepilot.domain.models.network_connection import NetworkConnection
-from routepilot.domain.policy.policy_document import PolicyDocument
 from routepilot.domain.ports.policy_repository_port import PolicyRepositoryPort
 
 
@@ -26,10 +25,6 @@ class OverviewViewModel(QObject):
         self.data_changed.emit()
 
     @property
-    def connections(self) -> list[NetworkConnection]:
-        return self._discovery_service.get_cached_connections()
-
-    @property
     def active_vpns(self) -> list[NetworkConnection]:
         return self._discovery_service.get_active_vpns()
 
@@ -37,29 +32,22 @@ class OverviewViewModel(QObject):
     def direct_connection(self) -> NetworkConnection | None:
         return self._discovery_service.get_direct_connection()
 
-    @property
-    def policy_document(self) -> PolicyDocument:
-        return self._policy_repo.load_policy()
+    def rule_counts(self) -> tuple[int, int]:
+        """(enabled rules, total rules)."""
+        rules = self._policy_repo.load_policy().rules
+        return sum(1 for r in rules if r.enabled), len(rules)
 
     @property
-    def active_rules_count(self) -> int:
-        return sum(1 for r in self.policy_document.rules if r.enabled)
+    def state_key(self) -> str:
+        """Translation key describing the overall connectivity state."""
+        has_vpn, direct = bool(self.active_vpns), self.direct_connection
+        if direct and has_vpn:
+            return "overview.state.vpn_and_direct"
+        if direct:
+            return "overview.state.direct_only"
+        if has_vpn:
+            return "overview.state.vpn_only"
+        return "overview.state.offline"
 
-    @property
-    def total_rules_count(self) -> int:
-        return len(self.policy_document.rules)
-
-    @property
-    def status_summary(self) -> str:
-        vpns = len(self.active_vpns)
-        direct = self.direct_connection
-        if direct and vpns > 0:
-            return f"Active ({vpns} VPN connected, direct bypass via {direct.interface})"
-        elif direct:
-            return f"Connected to {direct.id} ({direct.interface}) — No VPN active"
-        elif vpns > 0:
-            return f"VPN active ({vpns} connected) — No direct physical egress detected"
-        return "Offline / No active network connections"
-
-    def _on_connections_changed(self, conns: list[NetworkConnection]) -> None:
+    def _on_connections_changed(self, _conns: list[NetworkConnection]) -> None:
         self.data_changed.emit()

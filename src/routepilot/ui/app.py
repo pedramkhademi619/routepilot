@@ -1,85 +1,86 @@
-"""Application entry point wiring ports, adapters, and Qt GUI."""
+"""Desktop entry point: composition root wiring adapters, services and the Qt GUI."""
 
-import asyncio
+import argparse
+import logging
 import sys
+from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
 
+from routepilot import __version__
 from routepilot.application.services.discovery_service import DiscoveryService
-from routepilot.application.services.reconciliation_service import ReconciliationService
 from routepilot.domain.ports.network_discovery_port import NetworkDiscoveryPort
 from routepilot.infrastructure.adapters.json_policy_repository_adapter import (
     JsonPolicyRepositoryAdapter,
 )
 from routepilot.infrastructure.adapters.mock_discovery_adapter import MockDiscoveryAdapter
-from routepilot.infrastructure.adapters.nftables_firewall_adapter import NftablesFirewallAdapter
 from routepilot.infrastructure.adapters.nm_discovery_adapter import NetworkManagerDiscoveryAdapter
-from routepilot.infrastructure.adapters.pyroute2_routing_adapter import Pyroute2RoutingAdapter
+from routepilot.ui.controllers.discovery_refresher import DiscoveryRefresher
+from routepilot.ui.controllers.privileged_helper import PrivilegedHelper
 from routepilot.ui.style import ThemeManager
 from routepilot.ui.translation_manager import TranslationManager
 from routepilot.ui.views.main_window import MainWindow
 
+ICON_PATH = Path(__file__).with_name("resources") / "routepilot.svg"
+
 
 class RoutePilotApp:
-    """Dependency injection orchestrator and Qt application lifecycle manager."""
+    """Owns the Qt application and the object graph of the desktop UI."""
 
     def __init__(self, use_mock: bool = False) -> None:
-        self.app = QApplication.instance() or QApplication(sys.argv)
+        existing = QApplication.instance()
+        self.app = existing if isinstance(existing, QApplication) else QApplication(sys.argv)
         self.app.setApplicationName("RoutePilot")
-        self.app.setOrganizationName("RoutePilot")
+        self.app.setApplicationVersion(__version__)
+        self.app.setDesktopFileName("routepilot")
+        icon = QIcon(str(ICON_PATH))
+        self.app.setWindowIcon(icon)
 
-        # Hexagonal Wiring: Adapters
-        self.discovery_adapter: NetworkDiscoveryPort = (
+        discovery: NetworkDiscoveryPort = (
             MockDiscoveryAdapter() if use_mock else NetworkManagerDiscoveryAdapter()
         )
         self.policy_repo = JsonPolicyRepositoryAdapter()
-        self.routing_adapter = Pyroute2RoutingAdapter()
-        self.firewall_adapter = NftablesFirewallAdapter()
+        self.discovery_service = DiscoveryService(discovery)
+        self.refresher = DiscoveryRefresher(self.discovery_service)
+        self.helper = PrivilegedHelper(self.policy_repo.file_path)
 
-        # Application Services
-        self.discovery_service = DiscoveryService(self.discovery_adapter)
-        self.reconciliation_service = ReconciliationService(
-            self.routing_adapter, self.firewall_adapter
-        )
-
-        # Style & Localization
-        ThemeManager.apply_theme(self.app, "dark")
         i18n = TranslationManager.instance()
-        if i18n.current_language == "fa":
-            self.app.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        else:
-            self.app.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        i18n.apply_layout_direction()
+        self.theme_manager = ThemeManager()
+        self.theme_manager.apply(self.app)
+        hints = self.app.styleHints()
+        if hints is not None:
+            hints.colorSchemeChanged.connect(self._on_system_scheme_changed)
 
         self.main_window = MainWindow(
             discovery_service=self.discovery_service,
             policy_repo=self.policy_repo,
-            reconciliation_service=self.reconciliation_service,
-            on_theme_changed=self._on_theme_changed,
+            helper=self.helper,
+            theme_manager=self.theme_manager,
+            refresher=self.refresher,
+            app_icon=icon,
         )
 
     def run(self) -> int:
-        """Initializes asynchronous discovery and starts the Qt main event loop."""
         self.main_window.show()
-
-        # Run initial discovery in event loop or synchronously
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(self.discovery_service.refresh())
-        except Exception:
-            pass
-
+        self.refresher.start()
         return self.app.exec()
 
-    def _on_theme_changed(self, theme_name: str) -> None:
-        ThemeManager.apply_theme(self.app, theme_name)
+    def _on_system_scheme_changed(self) -> None:
+        if self.theme_manager.theme == "system":
+            self.theme_manager.apply(self.app)
+            self.main_window.refresh_icons()
 
 
 def main() -> None:
-    use_mock = "--mock" in sys.argv
-    app = RoutePilotApp(use_mock=use_mock)
-    sys.exit(app.run())
+    parser = argparse.ArgumentParser(prog="routepilot-gui", description="RoutePilot desktop app")
+    parser.add_argument("--mock", action="store_true", help="Use a simulated network (demo mode)")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
+    args, qt_args = parser.parse_known_args()
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)
+    sys.argv = [sys.argv[0], *qt_args]
+    sys.exit(RoutePilotApp(use_mock=args.mock).run())
 
 
 if __name__ == "__main__":

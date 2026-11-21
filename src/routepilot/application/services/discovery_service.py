@@ -1,10 +1,14 @@
 """Discovery application service orchestrating network discovery adapters."""
 
+import logging
 from collections.abc import Callable
 
+from routepilot.application.services.egress_resolver import EgressResolver
 from routepilot.domain.models.network_connection import NetworkConnection
 from routepilot.domain.models.route_entry import RouteEntry
 from routepilot.domain.ports.network_discovery_port import NetworkDiscoveryPort
+
+logger = logging.getLogger(__name__)
 
 
 class DiscoveryService:
@@ -34,11 +38,11 @@ class DiscoveryService:
 
     def get_active_vpns(self) -> list[NetworkConnection]:
         """Returns only the currently active VPN connections."""
-        return [c for c in self._cached_connections if c.is_vpn]
+        return [c for c in self._cached_connections if c.is_vpn and c.is_active]
 
     def get_direct_connection(self) -> NetworkConnection | None:
         """Returns the primary physical non-VPN internet connection."""
-        return next((c for c in self._cached_connections if c.is_eligible_direct), None)
+        return EgressResolver().direct_connection(self._cached_connections)
 
     def add_change_listener(self, listener: Callable[[list[NetworkConnection]], None]) -> None:
         """Registers a listener callback for connection changes."""
@@ -59,4 +63,4 @@ class DiscoveryService:
             try:
                 listener(list(self._cached_connections))
             except Exception:
-                pass
+                logger.exception("Connection change listener failed")

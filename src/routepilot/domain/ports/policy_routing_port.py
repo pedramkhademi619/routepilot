@@ -3,33 +3,32 @@
 from abc import ABC, abstractmethod
 
 from routepilot.domain.models.route_entry import RouteEntry
+from routepilot.domain.models.rpdb_rule import RpdbRule
 
 
 class PolicyRoutingPort(ABC):
     """Port interface for managing Linux routing tables and ip rules."""
 
     @abstractmethod
-    def add_routing_table_route(self, table_id: int, route: RouteEntry) -> None:
-        """Adds a route entry to a specific policy routing table."""
+    def replace_route(self, route: RouteEntry) -> None:
+        """Adds the route, or replaces an existing route with the same table/destination."""
 
     @abstractmethod
-    def remove_routing_table_route(self, table_id: int, destination: str, family: int = 4) -> None:
-        """Removes a route entry from a policy routing table."""
+    def delete_route(self, route: RouteEntry) -> None:
+        """Deletes a route; deleting a route that does not exist is not an error."""
 
     @abstractmethod
-    def add_policy_rule(
-        self, table_id: int, priority: int, fwmark: int, fwmask: int = 0x00FF0000, family: int = 4
-    ) -> None:
-        """Creates an ip rule matching fwmark pointing to table_id."""
+    def list_routes(self, table_id: int, family: int = 4) -> list[RouteEntry]:
+        """Lists all routes currently configured in the given table."""
 
     @abstractmethod
-    def remove_policy_rule(self, priority: int, family: int = 4) -> None:
-        """Deletes an ip rule at the specified priority."""
+    def flush_table(self, table_id: int, family: int = 4) -> None:
+        """Deletes every route inside the given table."""
 
     @abstractmethod
-    def flush_table_routes(self, table_id: int, family: int = 4) -> None:
-        """Flushes all routes inside the designated RoutePilot policy table."""
+    def replace_rule(self, rule: RpdbRule) -> None:
+        """Makes ``rule`` the only ip rule at its priority (idempotent)."""
 
     @abstractmethod
-    def list_table_routes(self, table_id: int, family: int = 4) -> list[RouteEntry]:
-        """Lists all routes currently configured in the given policy table."""
+    def delete_rule(self, priority: int, family: int = 4) -> None:
+        """Deletes all ip rules at ``priority``; missing rules are not an error."""

@@ -1,17 +1,23 @@
 """Guided Rule Editor Dialog with real-time validation and plain-language summary."""
 
+from collections.abc import Sequence
+from enum import StrEnum
+
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
+    QDialogButtonBox,
     QFormLayout,
-    QHBoxLayout,
+    QFrame,
     QLabel,
     QLineEdit,
-    QPushButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
+    QWidget,
 )
 
+from routepilot.domain.models.network_connection import NetworkConnection
 from routepilot.domain.policy.action_type import ActionType
 from routepilot.domain.policy.condition_type import ConditionType
 from routepilot.domain.policy.failure_behavior import FailureBehavior
@@ -20,29 +26,43 @@ from routepilot.domain.policy.selector_type import SelectorType
 from routepilot.ui.translation_manager import TranslationManager
 from routepilot.ui.viewmodels.rule_editor_viewmodel import RuleEditorViewModel
 
+EDITABLE_SELECTORS = (
+    SelectorType.DOMAIN,
+    SelectorType.DOMAIN_AND_SUBDOMAINS,
+    SelectorType.IP_ADDRESS,
+    SelectorType.CIDR,
+)
+EDITABLE_ACTIONS = (
+    ActionType.USE_DIRECT,
+    ActionType.USE_SELECTED_VPN,
+    ActionType.BLOCK,
+    ActionType.FOLLOW_SYSTEM,
+)
+EDITABLE_CONDITIONS = (
+    ConditionType.ALWAYS,
+    ConditionType.ANY_VPN_ACTIVE,
+    ConditionType.SPECIFIC_VPN_ACTIVE,
+)
+EDITABLE_FALLBACKS = (FailureBehavior.BLOCK, FailureBehavior.FOLLOW_SYSTEM)
+
 
 class RuleEditorDialog(QDialog):
-    """Guided modal dialog for creating and editing RoutePilot policy rules."""
+    """Modal dialog for creating and editing RoutePilot policy rules."""
 
     def __init__(
-        self, existing_rule: RoutingRule | None = None, parent: QDialog | None = None
+        self,
+        existing_rule: RoutingRule | None = None,
+        vpns: list[NetworkConnection] | None = None,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.viewmodel = RuleEditorViewModel(existing_rule)
         self.i18n = TranslationManager.instance()
-        is_fa = self.i18n.current_language == "fa"
-
-        if existing_rule:
-            self.setWindowTitle(
-                "ویرایش قانون ترافیک — RoutePilot" if is_fa else "Edit Rule — RoutePilot"
-            )
-        else:
-            self.setWindowTitle(
-                "قانون ترافیک جدید — RoutePilot" if is_fa else "New Rule — RoutePilot"
-            )
-
-        self.setMinimumWidth(580)
+        self.viewmodel = RuleEditorViewModel(existing_rule, vpns)
         self._saved_rule: RoutingRule | None = None
+        t = self.i18n.t
+        self.setWindowTitle(t("editor.title_new" if self.viewmodel.is_new else "editor.title_edit"))
+        self.setMinimumWidth(360)
+        self.resize(560, 600)
 
         self._setup_ui()
         self._connect_signals()
@@ -53,181 +73,171 @@ class RuleEditorDialog(QDialog):
 
     def _setup_ui(self) -> None:
         t = self.i18n.t
-        is_fa = self.i18n.current_language == "fa"
+        vm = self.viewmodel
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(18)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(24, 22, 24, 12)
+        layout.setSpacing(16)
 
-        # Header
-        header = QLabel(t("editor.title_new") if not self.viewmodel.rule_id else t("editor.title_edit"))
+        header = QLabel(t("editor.title_new" if vm.is_new else "editor.title_edit"))
         header.setObjectName("titleLabel")
         layout.addWidget(header)
 
-        # Form layout
         form = QFormLayout()
-        form.setSpacing(12)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(10)
 
-        # 1. Name
-        self.name_input = QLineEdit(self.viewmodel.name)
-        self.name_input.setPlaceholderText(
-            "مثلاً بای‌پس بانک سامان یا soft98" if is_fa else "e.g. Bypass Local Banking"
-        )
+        self.name_input = QLineEdit(vm.name)
+        self.name_input.setPlaceholderText(t("editor.name_placeholder"))
         form.addRow(t("editor.name"), self.name_input)
 
-        # 2. Selector Type
-        self.selector_combo = QComboBox()
-        if is_fa:
-            self.selector_combo.addItem("دامنه تکی (single domain)", SelectorType.DOMAIN)
-            self.selector_combo.addItem(
-                "دامنه و کلیه زیردامنه‌ها (*.example.com)", SelectorType.DOMAIN_AND_SUBDOMAINS
-            )
-            self.selector_combo.addItem("آدرس IP اختصاصی", SelectorType.IP_ADDRESS)
-            self.selector_combo.addItem("ساب‌نت / رنج آی‌پی (CIDR)", SelectorType.CIDR)
-            self.selector_combo.addItem("برنامه کاربردی (Cgroup Scope)", SelectorType.APPLICATION)
-        else:
-            self.selector_combo.addItem("Domain name (single)", SelectorType.DOMAIN)
-            self.selector_combo.addItem(
-                "Domain and all subdomains (*.example.com)", SelectorType.DOMAIN_AND_SUBDOMAINS
-            )
-            self.selector_combo.addItem("IP Address", SelectorType.IP_ADDRESS)
-            self.selector_combo.addItem("CIDR Subnet (e.g. 192.168.1.0/24)", SelectorType.CIDR)
-            self.selector_combo.addItem("Application Scope (ID)", SelectorType.APPLICATION)
-        self._select_combo_data(self.selector_combo, self.viewmodel.selector_type)
+        selectors = list(EDITABLE_SELECTORS)
+        if vm.selector_type not in selectors:
+            selectors.append(vm.selector_type)  # keep legacy/experimental values editable
+        self.selector_combo = self._combo("selector", selectors, vm.selector_type)
         form.addRow(t("editor.target_type"), self.selector_combo)
 
-        # 3. Selector Value
-        self.value_input = QLineEdit(self.viewmodel.selector_value)
-        self.value_input.setPlaceholderText("e.g. examplebank.ir or 198.51.100.0/24")
+        self.value_input = QLineEdit(vm.selector_value)
         form.addRow(t("editor.target_value"), self.value_input)
 
-        # 4. Action
-        self.action_combo = QComboBox()
-        if is_fa:
-            self.action_combo.addItem("عبور از اینترنت مستقیم (بای‌پس VPN)", ActionType.USE_DIRECT)
-            self.action_combo.addItem("هدایت اختصاصی از VPN", ActionType.USE_SELECTED_VPN)
-            self.action_combo.addItem("مسدودسازی ترافیک (بلاک)", ActionType.BLOCK)
-            self.action_combo.addItem("پیروی از مسیریابی پیش‌فرض سیستم", ActionType.FOLLOW_SYSTEM)
-        else:
-            self.action_combo.addItem("Use Direct Internet (Bypass VPN)", ActionType.USE_DIRECT)
-            self.action_combo.addItem("Exclusively Use VPN", ActionType.USE_SELECTED_VPN)
-            self.action_combo.addItem("Block Traffic (Drop)", ActionType.BLOCK)
-            self.action_combo.addItem("Follow System Routing", ActionType.FOLLOW_SYSTEM)
-        self._select_combo_data(self.action_combo, self.viewmodel.action_type)
+        self.action_combo = self._combo("action", EDITABLE_ACTIONS, vm.action_type)
         form.addRow(t("editor.action"), self.action_combo)
 
-        # 5. Priority
-        self.prio_spin = QSpinBox()
-        self.prio_spin.setRange(1, 9999)
-        self.prio_spin.setValue(self.viewmodel.priority)
-        form.addRow(t("editor.priority"), self.prio_spin)
+        self.vpn_combo = self._vpn_combo(vm.target_vpn_uuid, allow_any=True)
+        self.vpn_label = QLabel(t("editor.target_vpn"))
+        form.addRow(self.vpn_label, self.vpn_combo)
 
-        # 6. Condition
-        self.condition_combo = QComboBox()
-        if is_fa:
-            self.condition_combo.addItem("همیشه فعال", ConditionType.ALWAYS)
-            self.condition_combo.addItem("هنگام فعال بودن هرگونه VPN", ConditionType.ANY_VPN_ACTIVE)
-            self.condition_combo.addItem(
-                "هنگام فعال بودن VPN خاص", ConditionType.SPECIFIC_VPN_ACTIVE
-            )
-        else:
-            self.condition_combo.addItem("Always Active", ConditionType.ALWAYS)
-            self.condition_combo.addItem("Whenever Any VPN is Active", ConditionType.ANY_VPN_ACTIVE)
-            self.condition_combo.addItem(
-                "When Specific VPN is Active", ConditionType.SPECIFIC_VPN_ACTIVE
-            )
-        self._select_combo_data(self.condition_combo, self.viewmodel.condition_type)
+        self.condition_combo = self._combo("condition", EDITABLE_CONDITIONS, vm.condition_type)
         form.addRow(t("editor.condition"), self.condition_combo)
 
-        # 7. Fallback Policy
-        self.fallback_combo = QComboBox()
-        if is_fa:
-            self.fallback_combo.addItem("مسدودسازی در صورت قطعی (Fail-Closed)", FailureBehavior.BLOCK)
-            self.fallback_combo.addItem(
-                "استفاده از اینترنت پیش‌فرض سیستم (Fail-Open)", FailureBehavior.FOLLOW_SYSTEM
-            )
-        else:
-            self.fallback_combo.addItem("Block Traffic (Fail-Closed, Safest)", FailureBehavior.BLOCK)
-            self.fallback_combo.addItem(
-                "Follow Default Routing (Fail-Open)", FailureBehavior.FOLLOW_SYSTEM
-            )
-        self._select_combo_data(self.fallback_combo, self.viewmodel.failure_behavior)
+        self.condition_vpn_combo = self._vpn_combo(vm.condition_vpn_uuid, allow_any=False)
+        self.condition_vpn_label = QLabel(t("editor.condition_vpn"))
+        form.addRow(self.condition_vpn_label, self.condition_vpn_combo)
+
+        self.fallback_combo = self._combo("fallback", EDITABLE_FALLBACKS, vm.failure_behavior)
         form.addRow(t("editor.failure"), self.fallback_combo)
 
+        self.prio_spin = QSpinBox()
+        self.prio_spin.setRange(1, 9999)
+        self.prio_spin.setValue(vm.priority)
+        self.prio_spin.setToolTip(t("editor.priority_hint"))
+        line_edit = self.prio_spin.lineEdit()
+        if line_edit is not None:
+            line_edit.setTextMargins(8, 0, 8, 0)  # QSS padding does not reach the inner editor
+        form.addRow(t("editor.priority"), self.prio_spin)
         layout.addLayout(form)
 
-        # Live plain-language preview
-        preview_box = QVBoxLayout()
         preview_title = QLabel(t("editor.explanation"))
         preview_title.setObjectName("cardTitle")
         self.preview_label = QLabel()
+        self.preview_label.setObjectName("previewLabel")
         self.preview_label.setWordWrap(True)
-        self.preview_label.setStyleSheet("color: #63B3ED; font-style: italic; padding: 6px 0;")
-        preview_box.addWidget(preview_title)
-        preview_box.addWidget(self.preview_label)
-        layout.addLayout(preview_box)
-
-        # Validation status message
         self.error_label = QLabel()
-        self.error_label.setStyleSheet("color: #FC8181; font-weight: 500;")
+        self.error_label.setObjectName("errorLabel")
+        self.error_label.setWordWrap(True)
+        layout.addWidget(preview_title)
+        layout.addWidget(self.preview_label)
         layout.addWidget(self.error_label)
+        layout.addStretch()
 
-        # Action Buttons
-        btn_box = QHBoxLayout()
-        btn_box.addStretch()
+        scroll.setWidget(body)
+        outer.addWidget(scroll, 1)
 
-        cancel_btn = QPushButton(t("editor.cancel"))
-        cancel_btn.setObjectName("secondaryButton")
-        cancel_btn.clicked.connect(self.reject)
-        btn_box.addWidget(cancel_btn)
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        self.buttons.setContentsMargins(24, 8, 24, 18)
+        self.save_btn = self.buttons.button(QDialogButtonBox.StandardButton.Save)
+        cancel_btn = self.buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        if self.save_btn is not None:
+            self.save_btn.setText(t("editor.save"))
+            self.save_btn.setObjectName("primaryButton")
+        if cancel_btn is not None:
+            cancel_btn.setText(t("common.cancel"))
+            cancel_btn.setObjectName("secondaryButton")
+        self.buttons.accepted.connect(self._on_save_clicked)
+        self.buttons.rejected.connect(self.reject)
+        outer.addWidget(self.buttons)
 
-        self.save_btn = QPushButton(t("editor.save"))
-        self.save_btn.setObjectName("primaryButton")
-        self.save_btn.clicked.connect(self._on_save_clicked)
-        btn_box.addWidget(self.save_btn)
+    def _combo(self, prefix: str, values: Sequence[StrEnum], current: StrEnum) -> QComboBox:
+        combo = QComboBox()
+        for value in values:
+            combo.addItem(self.i18n.t(f"{prefix}.{value.value}"), value)
+        index = combo.findData(current)
+        combo.setCurrentIndex(max(index, 0))
+        return combo
 
-        layout.addLayout(btn_box)
+    def _vpn_combo(self, current_uuid: str | None, allow_any: bool) -> QComboBox:
+        combo = QComboBox()
+        if allow_any:
+            combo.addItem(self.i18n.t("editor.any_vpn"), None)
+        for vpn in self.viewmodel.vpns:
+            combo.addItem(f"{vpn.id} ({vpn.interface})", vpn.uuid)
+        if current_uuid and combo.findData(current_uuid) < 0:
+            combo.addItem(current_uuid, current_uuid)  # VPN configured earlier but offline now
+        index = combo.findData(current_uuid)
+        combo.setCurrentIndex(max(index, 0))
+        return combo
 
     def _connect_signals(self) -> None:
-        self.name_input.textChanged.connect(self._on_input_changed)
-        self.value_input.textChanged.connect(self._on_input_changed)
-        self.selector_combo.currentIndexChanged.connect(self._on_input_changed)
-        self.action_combo.currentIndexChanged.connect(self._on_input_changed)
-        self.condition_combo.currentIndexChanged.connect(self._on_input_changed)
-        self.fallback_combo.currentIndexChanged.connect(self._on_input_changed)
+        for line_edit in (self.name_input, self.value_input):
+            line_edit.textChanged.connect(self._on_input_changed)
+        for combo in (
+            self.selector_combo,
+            self.action_combo,
+            self.vpn_combo,
+            self.condition_combo,
+            self.condition_vpn_combo,
+            self.fallback_combo,
+        ):
+            combo.currentIndexChanged.connect(self._on_input_changed)
         self.prio_spin.valueChanged.connect(self._on_input_changed)
-
         self.viewmodel.validation_changed.connect(self._on_validation_changed)
         self.viewmodel.preview_changed.connect(self.preview_label.setText)
 
     def _on_input_changed(self) -> None:
-        sel_type = self.selector_combo.currentData()
-        action_type = self.action_combo.currentData()
-        cond_type = self.condition_combo.currentData()
-        fail_type = self.fallback_combo.currentData()
+        selector = self.selector_combo.currentData()
+        action = self.action_combo.currentData()
+        condition = self.condition_combo.currentData()
+        self.value_input.setPlaceholderText(self.i18n.t(f"editor.placeholder.{selector.value}"))
+
+        needs_vpn = action == ActionType.USE_SELECTED_VPN
+        needs_condition_vpn = condition == ConditionType.SPECIFIC_VPN_ACTIVE
+        for widget in (self.vpn_label, self.vpn_combo):
+            widget.setVisible(needs_vpn)
+        for widget in (self.condition_vpn_label, self.condition_vpn_combo):
+            widget.setVisible(needs_condition_vpn)
 
         self.viewmodel.update_draft(
             name=self.name_input.text(),
             priority=self.prio_spin.value(),
-            selector_type=sel_type,
+            selector_type=selector,
             selector_value=self.value_input.text(),
-            action_type=action_type,
-            condition_type=cond_type,
-            failure_behavior=fail_type,
+            action_type=action,
+            condition_type=condition,
+            failure_behavior=self.fallback_combo.currentData(),
+            target_vpn_uuid=self.vpn_combo.currentData() if needs_vpn else None,
+            condition_vpn_uuid=self.condition_vpn_combo.currentData()
+            if needs_condition_vpn
+            else None,
         )
 
     def _on_validation_changed(self, is_valid: bool, error_msg: str) -> None:
-        self.save_btn.setEnabled(is_valid)
-        self.error_label.setText(error_msg if not is_valid else "")
+        if self.save_btn is not None:
+            self.save_btn.setEnabled(is_valid)
+        self.error_label.setText(error_msg)
+        self.error_label.setVisible(bool(error_msg))
 
     def _on_save_clicked(self) -> None:
         is_valid, _ = self.viewmodel.validate()
         if is_valid:
             self._saved_rule = self.viewmodel.build_rule()
             self.accept()
-
-    def _select_combo_data(self, combo: QComboBox, value: object) -> None:
-        for idx in range(combo.count()):
-            if combo.itemData(idx) == value:
-                combo.setCurrentIndex(idx)
-                break

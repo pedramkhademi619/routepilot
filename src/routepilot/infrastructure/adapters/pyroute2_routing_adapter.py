@@ -1,162 +1,141 @@
 """Linux kernel RPDB and routing table adapter using pyroute2 Netlink."""
 
+import errno
 import logging
+import socket
+from typing import Any
 
 from pyroute2 import IPRoute
+from pyroute2.netlink.exceptions import NetlinkError
 
 from routepilot.domain.models.route_entry import RouteEntry
+from routepilot.domain.models.route_type import RouteType
+from routepilot.domain.models.rpdb_rule import RpdbRule
 from routepilot.domain.ports.policy_routing_port import PolicyRoutingPort
 
 logger = logging.getLogger(__name__)
+
+# Kernel route type numbers (rtnetlink.h) <-> RouteType
+_RTN_BY_TYPE = {RouteType.UNICAST: 1, RouteType.UNREACHABLE: 7, RouteType.THROW: 9}
+_TYPE_BY_RTN = {v: k for k, v in _RTN_BY_TYPE.items()}
+# "Nothing to delete" answers from the kernel
+_MISSING = (errno.ENOENT, errno.ESRCH)
 
 
 class Pyroute2RoutingAdapter(PolicyRoutingPort):
     """Adapter executing netlink route and policy rule operations via pyroute2."""
 
-    def add_routing_table_route(self, table_id: int, route: RouteEntry) -> None:
-        ip = IPRoute()
-        try:
-            oif = None
-            if route.interface and route.interface != "unknown":
-                links = ip.link_lookup(ifname=route.interface)
-                if links:
-                    oif = links[0]
+    def replace_route(self, route: RouteEntry) -> None:
+        with IPRoute() as ip:
+            request = self._route_request(ip, route)
+            if route.route_type == RouteType.UNICAST:
+                if route.gateway:
+                    request["gateway"] = route.gateway
+                if route.interface:
+                    links = ip.link_lookup(ifname=route.interface)
+                    if not links:
+                        raise RuntimeError(f"Interface '{route.interface}' does not exist")
+                    request["oif"] = links[0]
+            ip.route("replace", **request)
+        logger.info(
+            "Route set: table %d %s %s via %s dev %s",
+            route.table_id,
+            route.route_type.value,
+            route.destination,
+            route.gateway,
+            route.interface,
+        )
 
-            kwargs = {
-                "dst": route.destination if route.destination != "0.0.0.0/0" else "default",
-                "table": table_id,
-                "metric": route.metric,
-            }
-            if route.gateway:
-                kwargs["gateway"] = route.gateway
-            if oif:
-                kwargs["oif"] = oif
-
-            ip.route("replace", **kwargs)
-            logger.info(
-                "Route added: table %d dst %s via %s dev %s",
-                table_id,
-                route.destination,
-                route.gateway,
-                route.interface,
-            )
-        finally:
-            ip.close()
-
-    def remove_routing_table_route(self, table_id: int, destination: str, family: int = 4) -> None:
-        ip = IPRoute()
-        try:
-            dst = destination if destination != "0.0.0.0/0" else "default"
-            if dst.endswith("/32"):
-                dst = dst[:-3]
-            elif dst.endswith("/128"):
-                dst = dst[:-4]
-
-            routes = ip.get_routes(family=2 if family == 4 else 10, table=table_id)
-            deleted = False
-            for r in routes:
-                attrs = dict(r.get("attrs", []))
-                rta_dst = attrs.get("RTA_DST")
-                if rta_dst == dst or (dst == "default" and "RTA_DST" not in attrs):
-                    try:
-                        ip.route("del", **r)
-                        deleted = True
-                        logger.info("Route removed: table %d dst %s", table_id, destination)
-                    except Exception as err:
-                        logger.debug("Failed deleting specific route: %s", err)
-
-            if not deleted:
-                try:
-                    ip.route("del", dst=dst, table=table_id, family=family)
-                    logger.info("Route removed (fallback): table %d dst %s", table_id, destination)
-                except Exception as err:
-                    logger.debug("Fallback route del error: %s", err)
-        except Exception as e:
-            logger.debug("Route del non-fatal error: %s", e)
-        finally:
-            ip.close()
-
-    def add_policy_rule(
-        self, table_id: int, priority: int, fwmark: int, fwmask: int = 0x00FF0000, family: int = 4
-    ) -> None:
-        ip = IPRoute()
-        try:
-            # Delete existing rule at this priority if present to maintain idempotency
+    def delete_route(self, route: RouteEntry) -> None:
+        with IPRoute() as ip:
             try:
-                ip.rule("del", priority=priority, family=family)
-            except Exception:
-                pass
+                ip.route("del", **self._route_request(ip, route))
+                logger.info("Route removed: table %d %s", route.table_id, route.destination)
+            except NetlinkError as e:
+                if e.code not in _MISSING:
+                    raise
 
-            ip.rule(
-                "add",
-                table=table_id,
-                priority=priority,
-                fwmark=fwmark,
-                fwmask=fwmask,
-                family=family,
-            )
-            logger.info(
-                "IP rule added: mark %s/%s -> table %d prio %d",
-                hex(fwmark),
-                hex(fwmask),
-                table_id,
-                priority,
-            )
-        finally:
-            ip.close()
-
-    def remove_policy_rule(self, priority: int, family: int = 4) -> None:
-        ip = IPRoute()
-        try:
-            ip.rule("del", priority=priority, family=family)
-            logger.info("IP rule removed: prio %d", priority)
-        except Exception as e:
-            logger.debug("IP rule remove non-fatal error: %s", e)
-        finally:
-            ip.close()
-
-    def flush_table_routes(self, table_id: int, family: int = 4) -> None:
-        ip = IPRoute()
-        try:
-            routes = ip.get_routes(table=table_id, family=family)
-            for r in routes:
-                attrs = dict(r["attrs"])
-                dst = attrs.get("RTA_DST", "default")
-                try:
-                    ip.route("del", dst=dst, table=table_id, family=family)
-                except Exception:
-                    pass
-            logger.info("Flushed routes in table %d", table_id)
-        finally:
-            ip.close()
-
-    def list_table_routes(self, table_id: int, family: int = 4) -> list[RouteEntry]:
-        ip = IPRoute()
+    def list_routes(self, table_id: int, family: int = 4) -> list[RouteEntry]:
         entries: list[RouteEntry] = []
-        try:
-            raw_routes = ip.get_routes(table=table_id, family=family)
-            for r in raw_routes:
-                attrs = dict(r["attrs"])
-                dst = attrs.get("RTA_DST", "0.0.0.0")
-                dst_len = r["dst_len"]
-                gw = attrs.get("RTA_GATEWAY")
-                metric = attrs.get("RTA_PRIORITY", 100)
-                oif = attrs.get("RTA_OIF")
-                ifname = "unknown"
-                if oif:
-                    links = ip.get_links(oif)
-                    if links:
-                        ifname = dict(links[0]["attrs"]).get("IFLA_IFNAME", "unknown")
+        with IPRoute() as ip:
+            for msg in ip.get_routes(family=self._af(family), table=table_id):
+                if msg.get_attr("RTA_TABLE") not in (None, table_id):
+                    continue
+                route_type = _TYPE_BY_RTN.get(msg["type"])
+                if route_type is None:
+                    continue  # e.g. local/broadcast routes we never create
+                default_dst = "0.0.0.0" if family == 4 else "::"
+                dst = msg.get_attr("RTA_DST") or default_dst
+                oif = msg.get_attr("RTA_OIF")
                 entries.append(
                     RouteEntry(
-                        destination=f"{dst}/{dst_len}",
-                        gateway=gw,
-                        interface=ifname,
-                        metric=metric,
+                        destination=f"{dst}/{msg['dst_len']}",
+                        gateway=msg.get_attr("RTA_GATEWAY"),
+                        interface=self._ifname(ip, oif) if oif else None,
+                        metric=msg.get_attr("RTA_PRIORITY") or 0,
                         table_id=table_id,
-                        family=family,
+                        route_type=route_type,
                     )
                 )
-        finally:
-            ip.close()
         return entries
+
+    def flush_table(self, table_id: int, family: int = 4) -> None:
+        for route in self.list_routes(table_id, family):
+            self.delete_route(route)
+        logger.info("Flushed table %d (IPv%d)", table_id, family)
+
+    def replace_rule(self, rule: RpdbRule) -> None:
+        with IPRoute() as ip:
+            existing = [
+                r
+                for r in ip.get_rules(family=self._af(rule.family))
+                if r.get_attr("FRA_PRIORITY") == rule.priority
+            ]
+            if len(existing) == 1 and self._rule_table(existing[0]) == rule.table_id:
+                return  # Already in place; avoid a delete/add window
+            self._delete_rules_at(ip, rule.priority, rule.family)
+            ip.rule(
+                "add",
+                table=rule.table_id,
+                priority=rule.priority,
+                family=self._af(rule.family),
+            )
+        logger.info(
+            "ip rule set: prio %d lookup %d (IPv%d)", rule.priority, rule.table_id, rule.family
+        )
+
+    def delete_rule(self, priority: int, family: int = 4) -> None:
+        with IPRoute() as ip:
+            self._delete_rules_at(ip, priority, family)
+
+    def _delete_rules_at(self, ip: IPRoute, priority: int, family: int) -> None:
+        # A priority can hold several rules; delete until the kernel reports none left.
+        for _ in range(64):
+            try:
+                ip.rule("del", priority=priority, family=self._af(family))
+            except NetlinkError as e:
+                if e.code in _MISSING:
+                    return
+                raise
+            logger.info("ip rule removed: prio %d (IPv%d)", priority, family)
+
+    def _route_request(self, ip: IPRoute, route: RouteEntry) -> dict[str, Any]:
+        return {
+            "dst": route.destination,
+            "table": route.table_id,
+            "family": self._af(route.family),
+            "type": _RTN_BY_TYPE[route.route_type],
+        }
+
+    @staticmethod
+    def _rule_table(msg: Any) -> int:
+        return int(msg.get_attr("FRA_TABLE") or msg["table"])
+
+    @staticmethod
+    def _ifname(ip: IPRoute, index: int) -> str | None:
+        links = ip.get_links(index)
+        return str(links[0].get_attr("IFLA_IFNAME")) if links else None
+
+    @staticmethod
+    def _af(family: int) -> int:
+        return socket.AF_INET6 if family == 6 else socket.AF_INET
